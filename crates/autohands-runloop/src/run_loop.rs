@@ -10,8 +10,13 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
+use autohands_core::registry::ChannelRegistry;
+use autohands_protocols::channel::OutboundMessage;
+
+use crate::agent_driver::AgentEventHandler;
+use crate::agent_source::AgentTaskInjector;
 use crate::config::RunLoopConfig;
 use crate::error::{RunLoopError, RunLoopResult};
 use crate::task::{Task, TaskQueue};
@@ -91,6 +96,7 @@ pub struct RunLoop {
     task_queue: Arc<TaskQueue>,
 
     /// Configuration.
+    #[allow(dead_code)]
     config: RunLoopConfig,
 
     /// Metrics.
@@ -98,6 +104,12 @@ pub struct RunLoop {
 
     /// Spawner inner state for task tracking.
     spawner_inner: Arc<SpawnerInner>,
+
+    /// Agent event handler for processing tasks.
+    handler: RwLock<Option<Arc<dyn AgentEventHandler>>>,
+
+    /// Channel registry for sending responses.
+    channel_registry: RwLock<Option<Arc<ChannelRegistry>>>,
 }
 
 impl RunLoop {
@@ -123,6 +135,8 @@ impl RunLoop {
             config,
             metrics: Arc::new(RunLoopMetrics::new()),
             spawner_inner: Arc::new(SpawnerInner::new()),
+            handler: RwLock::new(None),
+            channel_registry: RwLock::new(None),
         };
 
         // Initialize default modes
@@ -135,6 +149,18 @@ impl RunLoop {
             .insert(RunLoopMode::Background, ModeData::new());
 
         run_loop
+    }
+
+    /// Set the agent event handler for task processing.
+    pub async fn set_handler(&self, handler: Arc<dyn AgentEventHandler>) {
+        *self.handler.write().await = Some(handler);
+        info!("RunLoop: Agent event handler configured");
+    }
+
+    /// Set the channel registry for sending responses.
+    pub async fn set_channel_registry(&self, registry: Arc<ChannelRegistry>) {
+        *self.channel_registry.write().await = Some(registry);
+        info!("RunLoop: Channel registry configured");
     }
 
     /// Get current state.
@@ -188,6 +214,113 @@ impl RunLoop {
             total_cancelled: self.spawner_inner.total_cancelled.load(Ordering::SeqCst),
             total_failed: self.spawner_inner.total_failed.load(Ordering::SeqCst),
             active_tasks: self.spawner_inner.tasks.len(),
+        }
+    }
+
+    // ========================================================================
+    // Task Processing
+    // ========================================================================
+
+    /// Process a task using the configured handler.
+    ///
+    /// This is the core task processing logic:
+    /// 1. Check if handler is configured
+    /// 2. Execute the task via handler
+    /// 3. Send response back via channel if reply_to is set
+    async fn process_task(&self, task: Task) -> RunLoopResult<()> {
+        let handler_guard = self.handler.read().await;
+        let handler = match handler_guard.as_ref() {
+            Some(h) => h.clone(),
+            None => {
+                warn!("No handler configured, task {} ignored", task.id);
+                return Ok(());
+            }
+        };
+        drop(handler_guard); // Release lock before async operation
+
+        // Create an injector with direct queue access
+        // Follow-up tasks from AgentResult.tasks will be enqueued after processing
+        let injector = AgentTaskInjector::with_queue(self.task_queue.clone());
+
+        // Route task to appropriate handler method based on task type
+        let result = match task.task_type.as_str() {
+            "agent:execute" => {
+                info!(
+                    "Executing agent task: task_id={}, correlation_id={:?}",
+                    task.id, task.correlation_id
+                );
+                handler.handle_execute(&task, &injector).await
+            }
+            "agent:subtask" => {
+                debug!(
+                    "Executing subtask: task_id={}, correlation_id={:?}",
+                    task.id, task.correlation_id
+                );
+                handler.handle_subtask(&task, &injector).await
+            }
+            "agent:delayed" => {
+                debug!(
+                    "Executing delayed task: task_id={}, correlation_id={:?}",
+                    task.id, task.correlation_id
+                );
+                handler.handle_delayed(&task, &injector).await
+            }
+            _ => {
+                debug!("Unknown task type: {}, ignoring", task.task_type);
+                return Ok(());
+            }
+        };
+
+        match result {
+            Ok(agent_result) => {
+                // Inject follow-up tasks
+                if !agent_result.tasks.is_empty() {
+                    info!("Injecting {} follow-up tasks", agent_result.tasks.len());
+                    for follow_up in agent_result.tasks {
+                        self.task_queue.enqueue(follow_up).await?;
+                    }
+                }
+
+                // Send response back via channel if reply_to is set
+                if let Some(ref reply_to) = task.reply_to {
+                    if let Some(ref response) = agent_result.response {
+                        let channel_guard = self.channel_registry.read().await;
+                        if let Some(ref registry) = *channel_guard {
+                            let outbound = OutboundMessage::text(response);
+                            match registry.send(reply_to, outbound).await {
+                                Ok(_) => {
+                                    info!(
+                                        "Response sent to channel: {} target: {}",
+                                        reply_to.channel_id, reply_to.target
+                                    );
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "Failed to send response to channel {}: {}",
+                                        reply_to.channel_id, e
+                                    );
+                                }
+                            }
+                        } else {
+                            warn!("No channel registry configured, cannot send response");
+                        }
+                    }
+                }
+
+                if agent_result.is_complete {
+                    info!(
+                        "Task completed: task_id={}, has_response={}",
+                        task.id,
+                        agent_result.response.is_some()
+                    );
+                }
+
+                Ok(())
+            }
+            Err(e) => {
+                error!("Task execution failed: task_id={}, error={}", task.id, e);
+                Err(e)
+            }
         }
     }
 
@@ -388,10 +521,13 @@ impl RunLoop {
             // │ 5. Process pending tasks                                │
             // └─────────────────────────────────────────────────────────┘
             if let Some(task) = self.task_queue.dequeue().await {
-                debug!("Processing task: {} (type: {})", task.id, task.task_type);
+                info!("Processing task: {} (type: {})", task.id, task.task_type);
                 self.metrics.record_events_processed(1);
-                // Task processing would be handled by the Agent Driver
-                // For now, we just log it
+
+                // Process the task using the handler
+                if let Err(e) = self.process_task(task).await {
+                    error!("Task processing error: {}", e);
+                }
                 continue;
             }
 
@@ -527,28 +663,24 @@ impl RunLoop {
 
     /// Try to process Source1 messages (non-blocking).
     async fn try_process_source1(&self) -> RunLoopResult<Option<Vec<Task>>> {
-        let mut receivers = self.source1_receivers.write().await;
+        let receivers = self.source1_receivers.read().await;
 
-        for receiver in receivers.iter_mut() {
+        for receiver in receivers.iter() {
             if !receiver.source.is_valid() {
                 continue;
             }
 
-            match receiver.receiver.try_recv() {
-                Ok(msg) => {
-                    self.metrics.record_source1_message();
-                    let tasks = receiver.source.handle(msg).await?;
-                    return Ok(Some(tasks));
-                }
-                Err(mpsc::error::TryRecvError::Empty) => continue,
-                Err(mpsc::error::TryRecvError::Disconnected) => {
-                    // Mark source as invalid
-                    receiver.source.cancel();
-                }
+            if let Some(msg) = receiver.try_recv() {
+                self.metrics.record_source1_message();
+                let tasks = receiver.source.handle(msg).await?;
+                return Ok(Some(tasks));
             }
         }
 
-        // Clean up invalid sources
+        drop(receivers);
+
+        // Clean up invalid sources (need write lock)
+        let mut receivers = self.source1_receivers.write().await;
         receivers.retain(|r| r.source.is_valid());
 
         Ok(None)
@@ -632,23 +764,51 @@ impl RunLoop {
     }
 
     /// Wait for Source1 activity.
+    ///
+    /// Uses FuturesUnordered to concurrently wait on all Source1 receivers.
+    /// This is a true event-driven implementation without polling.
     async fn wait_source1_activity(&self) -> Option<(String, PortMessage)> {
-        // This is a simplified version - in production, we'd use a more
-        // sophisticated approach like a FuturesUnordered
-        let mut receivers = self.source1_receivers.write().await;
+        use futures::stream::{FuturesUnordered, StreamExt};
+        use tokio::sync::Mutex;
 
-        for receiver in receivers.iter_mut() {
-            if !receiver.source.is_valid() {
-                continue;
-            }
+        // Collect valid receivers with their source info (only need read lock)
+        let receivers = self.source1_receivers.read().await;
 
-            if let Ok(msg) = receiver.receiver.try_recv() {
-                return Some((receiver.source.id().to_string(), msg));
-            }
+        // Collect Arc clones so we can release the read lock before awaiting
+        let receiver_infos: Vec<(String, Arc<Mutex<mpsc::Receiver<PortMessage>>>)> = receivers
+            .iter()
+            .filter(|r| r.source.is_valid())
+            .map(|r| (r.source.id().to_string(), r.receiver_arc()))
+            .collect();
+
+        drop(receivers); // Release read lock before async waiting
+
+        if receiver_infos.is_empty() {
+            // No valid sources, return None to let the caller handle timeout
+            return None;
         }
 
-        // Wait a bit to avoid busy loop
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        // Build FuturesUnordered to wait on all receivers concurrently
+        let mut futures: FuturesUnordered<_> = receiver_infos
+            .into_iter()
+            .map(|(source_id, receiver_arc)| async move {
+                let mut guard = receiver_arc.lock().await;
+                match guard.recv().await {
+                    Some(msg) => Some((source_id, msg)),
+                    None => None, // Channel closed
+                }
+            })
+            .collect();
+
+        // Wait for the first receiver to produce a message
+        while let Some(result) = futures.next().await {
+            if let Some((source_id, msg)) = result {
+                return Some((source_id, msg));
+            }
+            // If None, the channel was closed - continue waiting on others
+        }
+
+        // All channels closed
         None
     }
 }

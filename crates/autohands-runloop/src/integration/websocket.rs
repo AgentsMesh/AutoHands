@@ -296,8 +296,7 @@ mod tests {
             .unwrap();
 
         // Receive the message
-        let mut rx = receiver.receiver;
-        let msg = rx.recv().await.unwrap();
+        let msg = receiver.receiver.lock().await.recv().await.unwrap();
         assert_eq!(msg.payload["type"], "chat");
         assert_eq!(msg.payload["content"], "Hello");
     }

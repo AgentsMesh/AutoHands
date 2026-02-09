@@ -306,8 +306,7 @@ async fn test_websocket_source1_chat() {
         .unwrap();
 
     // Receive and handle
-    let mut rx = receiver.receiver;
-    let msg = rx.recv().await.unwrap();
+    let msg = receiver.receiver.lock().await.recv().await.unwrap();
 
     // Verify message content
     assert_eq!(msg.payload["type"], "chat");

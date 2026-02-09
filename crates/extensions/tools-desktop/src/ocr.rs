@@ -73,7 +73,6 @@ impl OcrController {
     #[cfg(target_os = "macos")]
     pub fn recognize_image(&self, image_data: &[u8]) -> Result<OcrResult, OcrError> {
         use std::process::Command;
-        use std::io::Write;
 
         // Write image to temp file
         let temp_dir = std::env::temp_dir();

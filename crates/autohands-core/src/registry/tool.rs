@@ -1,53 +1,53 @@
 //! Tool registry for managing available tools.
 
-use dashmap::DashMap;
 use std::sync::Arc;
 
 use autohands_protocols::error::ExtensionError;
 use autohands_protocols::extension::ToolRegistryAccess;
 use autohands_protocols::tool::{Tool, ToolDefinition};
 
+use super::base::{BaseRegistry, Registerable};
+
+// Implement Registerable for Tool trait objects
+impl Registerable for dyn Tool {
+    fn registry_id(&self) -> &str {
+        &self.definition().id
+    }
+}
+
 /// Registry for managing tools.
+///
+/// Built on `BaseRegistry` for consistent behavior.
 pub struct ToolRegistry {
-    tools: DashMap<String, Arc<dyn Tool>>,
+    inner: BaseRegistry<dyn Tool>,
 }
 
 impl ToolRegistry {
     /// Create a new tool registry.
     pub fn new() -> Self {
         Self {
-            tools: DashMap::new(),
+            inner: BaseRegistry::new(),
         }
     }
 
     /// Register a tool.
     pub fn register(&self, tool: Arc<dyn Tool>) -> Result<(), ExtensionError> {
-        let id = tool.definition().id.clone();
-
-        if self.tools.contains_key(&id) {
-            return Err(ExtensionError::AlreadyRegistered(id));
-        }
-
-        self.tools.insert(id, tool);
-        Ok(())
+        self.inner.register(tool)
     }
 
     /// Unregister a tool.
     pub fn unregister(&self, id: &str) -> Result<(), ExtensionError> {
-        self.tools
-            .remove(id)
-            .ok_or_else(|| ExtensionError::NotFound(id.to_string()))?;
-        Ok(())
+        self.inner.unregister(id)
     }
 
     /// Get a tool by ID.
     pub fn get(&self, id: &str) -> Option<Arc<dyn Tool>> {
-        self.tools.get(id).map(|t| t.clone())
+        self.inner.get(id)
     }
 
     /// List all tool definitions.
     pub fn list(&self) -> Vec<ToolDefinition> {
-        self.tools.iter().map(|t| t.definition().clone()).collect()
+        self.inner.iter().map(|t| t.definition().clone()).collect()
     }
 }
 

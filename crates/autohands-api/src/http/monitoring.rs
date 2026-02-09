@@ -1,4 +1,5 @@
 //! Monitoring and health check handlers.
+#![allow(dead_code)]
 
 use axum::{extract::State, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};

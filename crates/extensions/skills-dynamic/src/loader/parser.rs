@@ -236,6 +236,7 @@ fn extract_frontmatter(content: &str) -> Result<(String, String), SkillError> {
 }
 
 /// Parse multiple skill files from a directory.
+#[allow(dead_code)]
 pub async fn parse_skill_directory(
     dir: &Path,
 ) -> Result<Vec<Skill>, SkillError> {
@@ -285,6 +286,7 @@ pub async fn parse_skill_directory(
     Ok(skills)
 }
 
+#[allow(dead_code)]
 fn load_single_file_skill(path: &Path) -> Result<Skill, SkillError> {
     let content = std::fs::read_to_string(path).map_err(|e| {
         SkillError::LoadingFailed(format!("Failed to read skill file {}: {}", path.display(), e))
@@ -293,6 +295,7 @@ fn load_single_file_skill(path: &Path) -> Result<Skill, SkillError> {
     parse_skill_markdown(&content, path.parent())
 }
 
+#[allow(dead_code)]
 fn load_directory_skill(dir: &Path, skill_file: &Path) -> Result<Skill, SkillError> {
     let content = std::fs::read_to_string(skill_file).map_err(|e| {
         SkillError::LoadingFailed(format!(

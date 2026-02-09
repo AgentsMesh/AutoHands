@@ -81,7 +81,7 @@ pub mod spawner;
 pub mod timer;
 
 // Re-exports
-pub use agent_driver::{AgentDriver, AgentEventHandler, AgentResult, AgentSession, SessionStatus};
+pub use agent_driver::{AgentDriver, AgentEventHandler, AgentExecutionContext, AgentResult, ExecutionStatus};
 pub use agent_source::{AgentTaskInjector, AgentSource0};
 pub use config::{TaskChainConfig, TaskQueueConfig, RetryConfig, RunLoopConfig, WorkerPoolConfig};
 pub use error::{TaskChainError, RunLoopError, RunLoopResult};
@@ -124,6 +124,9 @@ pub use integration::file_watcher::{
     FileWatcherTrigger, Trigger, TriggerError, TriggerEvent, TriggersConfig, WebhookConfig,
 };
 pub use integration::webhook::{WebhookEvent, WebhookSource1, WebhookTrigger};
+
+// Channel bridge exports
+pub use integration::channel_bridge::{ChannelBridge, ChannelBridgeConfig};
 
 #[cfg(test)]
 mod tests {

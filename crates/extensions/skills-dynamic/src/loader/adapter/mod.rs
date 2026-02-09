@@ -64,6 +64,7 @@ impl AdapterRegistry {
     }
 
     /// Add a custom adapter to the registry.
+    #[allow(dead_code)]
     pub fn register(&mut self, adapter: Box<dyn SkillAdapter>) {
         self.adapters.push(adapter);
     }

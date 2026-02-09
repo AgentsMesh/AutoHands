@@ -266,8 +266,7 @@ mod tests {
         signal_sender.shutdown().await.unwrap();
 
         // The message should be in the receiver's channel
-        let mut rx = receiver.receiver;
-        let msg = rx.recv().await.unwrap();
+        let msg = receiver.receiver.lock().await.recv().await.unwrap();
         assert_eq!(msg.payload["signal"], "shutdown");
     }
 

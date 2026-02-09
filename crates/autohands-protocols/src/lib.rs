@@ -27,7 +27,10 @@ pub mod types;
 pub use extension::{Extension, ExtensionContext, ExtensionManifest};
 pub use tool::{Tool, ToolContext, ToolDefinition, ToolResult};
 pub use provider::{CompletionRequest, CompletionResponse, CompletionStream, LLMProvider};
-pub use channel::{Channel, IncomingMessage, OutgoingMessage};
+pub use channel::{
+    Channel, ChannelCapabilities, ChannelId, InboundMessage, IncomingMessage, OutboundMessage,
+    OutgoingMessage, ReplyAddress,
+};
 pub use memory::{MemoryBackend, MemoryEntry, MemoryQuery};
 pub use agent::{Agent, AgentConfig, AgentContext};
 pub use skill::{Skill, SkillDefinition, SkillLoader};

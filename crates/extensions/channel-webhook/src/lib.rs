@@ -3,6 +3,7 @@
 //! Webhook channel for outbound notifications.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -12,7 +13,8 @@ use tokio::sync::broadcast;
 use tracing::{debug, error, warn};
 
 use autohands_protocols::channel::{
-    Channel, ChannelCapabilities, IncomingMessage, MessageTarget, OutgoingMessage, SentMessage,
+    Channel, ChannelCapabilities, ChannelId, InboundMessage, OutboundMessage, ReplyAddress,
+    SentMessage,
 };
 use autohands_protocols::error::ChannelError;
 
@@ -54,18 +56,18 @@ fn default_retries() -> u32 {
 pub struct WebhookPayload {
     pub event_type: String,
     pub timestamp: i64,
-    pub target: MessageTarget,
+    pub target: ReplyAddress,
     pub content: String,
 }
 
 /// Webhook channel implementation.
 pub struct WebhookChannel {
-    id: String,
+    id: ChannelId,
     config: WebhookConfig,
     client: Client,
     capabilities: ChannelCapabilities,
-    message_tx: broadcast::Sender<IncomingMessage>,
-    connected: bool,
+    message_tx: broadcast::Sender<InboundMessage>,
+    started: AtomicBool,
 }
 
 impl WebhookChannel {
@@ -91,8 +93,13 @@ impl WebhookChannel {
                 max_message_length: None,
             },
             message_tx,
-            connected: false,
+            started: AtomicBool::new(false),
         }
+    }
+
+    /// Check if the channel is started.
+    pub fn is_started(&self) -> bool {
+        self.started.load(Ordering::SeqCst)
     }
 
     async fn send_webhook(&self, payload: &WebhookPayload) -> Result<String, ChannelError> {
@@ -144,7 +151,7 @@ fn compute_signature(payload: &str, secret: &str) -> String {
 
 #[async_trait]
 impl Channel for WebhookChannel {
-    fn id(&self) -> &str {
+    fn id(&self) -> &ChannelId {
         &self.id
     }
 
@@ -152,24 +159,24 @@ impl Channel for WebhookChannel {
         &self.capabilities
     }
 
-    async fn connect(&mut self) -> Result<(), ChannelError> {
-        self.connected = true;
-        debug!("Webhook channel connected");
+    async fn start(&self) -> Result<(), ChannelError> {
+        self.started.store(true, Ordering::SeqCst);
+        debug!("Webhook channel started");
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> Result<(), ChannelError> {
-        self.connected = false;
-        debug!("Webhook channel disconnected");
+    async fn stop(&self) -> Result<(), ChannelError> {
+        self.started.store(false, Ordering::SeqCst);
+        debug!("Webhook channel stopped");
         Ok(())
     }
 
     async fn send(
         &self,
-        target: &MessageTarget,
-        message: OutgoingMessage,
+        target: &ReplyAddress,
+        message: OutboundMessage,
     ) -> Result<SentMessage, ChannelError> {
-        if !self.connected {
+        if !self.is_started() {
             return Err(ChannelError::Disconnected);
         }
 
@@ -208,7 +215,7 @@ impl Channel for WebhookChannel {
         Err(last_error.unwrap_or(ChannelError::SendFailed("Unknown error".to_string())))
     }
 
-    fn on_message(&self) -> broadcast::Receiver<IncomingMessage> {
+    fn inbound(&self) -> broadcast::Receiver<InboundMessage> {
         self.message_tx.subscribe()
     }
 }
@@ -226,6 +233,10 @@ mod tests {
             max_retries: 3,
             secret: None,
         }
+    }
+
+    fn create_test_target() -> ReplyAddress {
+        ReplyAddress::new("webhook", "target-1")
     }
 
     #[test]
@@ -251,11 +262,7 @@ mod tests {
         let payload = WebhookPayload {
             event_type: "message".to_string(),
             timestamp: 1234567890,
-            target: MessageTarget {
-                channel_id: "ch-1".to_string(),
-                thread_id: None,
-                user_id: None,
-            },
+            target: ReplyAddress::new("ch-1", "user-1"),
             content: "Hello".to_string(),
         };
         let json = serde_json::to_string(&payload).unwrap();
@@ -274,15 +281,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_connect_disconnect() {
+    async fn test_start_stop() {
         let config = create_test_config();
-        let mut channel = WebhookChannel::new("webhook", config);
+        let channel = WebhookChannel::new("webhook", config);
 
-        assert!(!channel.connected);
-        channel.connect().await.unwrap();
-        assert!(channel.connected);
-        channel.disconnect().await.unwrap();
-        assert!(!channel.connected);
+        assert!(!channel.is_started());
+        channel.start().await.unwrap();
+        assert!(channel.is_started());
+        channel.stop().await.unwrap();
+        assert!(!channel.is_started());
     }
 
     #[test]
@@ -358,11 +365,7 @@ mod tests {
 
     #[test]
     fn test_webhook_payload_fields() {
-        let target = MessageTarget {
-            channel_id: "ch-1".to_string(),
-            thread_id: Some("thread-1".to_string()),
-            user_id: Some("user-1".to_string()),
-        };
+        let target = ReplyAddress::with_thread("ch-1", "user-1", "thread-1");
         let payload = WebhookPayload {
             event_type: "notification".to_string(),
             timestamp: 1700000000,
@@ -399,31 +402,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_send_when_disconnected() {
+    async fn test_send_when_not_started() {
         let config = create_test_config();
         let channel = WebhookChannel::new("webhook", config);
-        // Not connected
+        // Not started
 
-        let target = MessageTarget {
-            channel_id: "ch-1".to_string(),
-            thread_id: None,
-            user_id: None,
-        };
-        let message = OutgoingMessage {
-            content: "Hello".to_string(),
-            attachments: vec![],
-            reply_to: None,
-        };
+        let target = create_test_target();
+        let message = OutboundMessage::text("Hello");
 
         let result = channel.send(&target, message).await;
         assert!(matches!(result, Err(ChannelError::Disconnected)));
     }
 
     #[test]
-    fn test_on_message_returns_receiver() {
+    fn test_inbound_returns_receiver() {
         let config = create_test_config();
         let channel = WebhookChannel::new("webhook", config);
-        let _rx = channel.on_message();
+        let _rx = channel.inbound();
         // Should not panic
     }
 
@@ -470,19 +465,11 @@ mod tests {
                 .await;
 
             let config = create_mock_config(&mock_server.uri());
-            let mut channel = WebhookChannel::new("test-webhook", config);
-            channel.connect().await.unwrap();
+            let channel = WebhookChannel::new("test-webhook", config);
+            channel.start().await.unwrap();
 
-            let target = MessageTarget {
-                channel_id: "ch-1".to_string(),
-                thread_id: None,
-                user_id: None,
-            };
-            let message = OutgoingMessage {
-                content: "Hello, webhook!".to_string(),
-                attachments: vec![],
-                reply_to: None,
-            };
+            let target = ReplyAddress::new("ch-1", "user-1");
+            let message = OutboundMessage::text("Hello, webhook!");
 
             let result = channel.send(&target, message).await;
             assert!(result.is_ok());
@@ -492,7 +479,7 @@ mod tests {
         async fn test_send_webhook_failure_with_retry() {
             let mock_server = MockServer::start().await;
 
-            // Fail first 2 attempts, succeed on 3rd
+            // Fail all attempts
             Mock::given(matchers::method("POST"))
                 .and(matchers::path("/"))
                 .respond_with(ResponseTemplate::new(500).set_body_string("Internal Error"))
@@ -501,19 +488,11 @@ mod tests {
                 .await;
 
             let config = create_mock_config(&mock_server.uri());
-            let mut channel = WebhookChannel::new("test-webhook", config);
-            channel.connect().await.unwrap();
+            let channel = WebhookChannel::new("test-webhook", config);
+            channel.start().await.unwrap();
 
-            let target = MessageTarget {
-                channel_id: "ch-1".to_string(),
-                thread_id: None,
-                user_id: None,
-            };
-            let message = OutgoingMessage {
-                content: "Test message".to_string(),
-                attachments: vec![],
-                reply_to: None,
-            };
+            let target = ReplyAddress::new("ch-1", "user-1");
+            let message = OutboundMessage::text("Test message");
 
             let result = channel.send(&target, message).await;
             assert!(result.is_err());
@@ -533,19 +512,11 @@ mod tests {
             let mut config = create_mock_config(&mock_server.uri());
             config.method = "PUT".to_string();
 
-            let mut channel = WebhookChannel::new("test-webhook", config);
-            channel.connect().await.unwrap();
+            let channel = WebhookChannel::new("test-webhook", config);
+            channel.start().await.unwrap();
 
-            let target = MessageTarget {
-                channel_id: "ch-1".to_string(),
-                thread_id: None,
-                user_id: None,
-            };
-            let message = OutgoingMessage {
-                content: "Test".to_string(),
-                attachments: vec![],
-                reply_to: None,
-            };
+            let target = ReplyAddress::new("ch-1", "user-1");
+            let message = OutboundMessage::text("Test");
 
             let result = channel.send(&target, message).await;
             assert!(result.is_ok());
@@ -566,19 +537,11 @@ mod tests {
             let mut config = create_mock_config(&mock_server.uri());
             config.headers.insert("X-Custom-Header".to_string(), "custom-value".to_string());
 
-            let mut channel = WebhookChannel::new("test-webhook", config);
-            channel.connect().await.unwrap();
+            let channel = WebhookChannel::new("test-webhook", config);
+            channel.start().await.unwrap();
 
-            let target = MessageTarget {
-                channel_id: "ch-1".to_string(),
-                thread_id: None,
-                user_id: None,
-            };
-            let message = OutgoingMessage {
-                content: "Test".to_string(),
-                attachments: vec![],
-                reply_to: None,
-            };
+            let target = ReplyAddress::new("ch-1", "user-1");
+            let message = OutboundMessage::text("Test");
 
             let result = channel.send(&target, message).await;
             assert!(result.is_ok());
@@ -599,19 +562,11 @@ mod tests {
             let mut config = create_mock_config(&mock_server.uri());
             config.secret = Some("my-secret-key".to_string());
 
-            let mut channel = WebhookChannel::new("test-webhook", config);
-            channel.connect().await.unwrap();
+            let channel = WebhookChannel::new("test-webhook", config);
+            channel.start().await.unwrap();
 
-            let target = MessageTarget {
-                channel_id: "ch-1".to_string(),
-                thread_id: None,
-                user_id: None,
-            };
-            let message = OutgoingMessage {
-                content: "Test".to_string(),
-                attachments: vec![],
-                reply_to: None,
-            };
+            let target = ReplyAddress::new("ch-1", "user-1");
+            let message = OutboundMessage::text("Test");
 
             let result = channel.send(&target, message).await;
             assert!(result.is_ok());
@@ -630,19 +585,11 @@ mod tests {
             let mut config = create_mock_config(&mock_server.uri());
             config.max_retries = 0; // No retries
 
-            let mut channel = WebhookChannel::new("test-webhook", config);
-            channel.connect().await.unwrap();
+            let channel = WebhookChannel::new("test-webhook", config);
+            channel.start().await.unwrap();
 
-            let target = MessageTarget {
-                channel_id: "ch-1".to_string(),
-                thread_id: None,
-                user_id: None,
-            };
-            let message = OutgoingMessage {
-                content: "Test".to_string(),
-                attachments: vec![],
-                reply_to: None,
-            };
+            let target = ReplyAddress::new("ch-1", "user-1");
+            let message = OutboundMessage::text("Test");
 
             let result = channel.send(&target, message).await;
             assert!(result.is_err());

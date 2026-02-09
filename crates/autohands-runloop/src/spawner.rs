@@ -273,8 +273,8 @@ pub trait SpawnerStateProvider: Send + Sync {
 pub struct RunLoopSpawner {
     /// State provider for RunLoop state checks.
     state_provider: Option<Arc<dyn SpawnerStateProvider>>,
-    /// Current correlation ID context.
-    correlation_context: RwLock<Option<String>>,
+    /// Current correlation ID context (wrapped in Arc for Drop support).
+    correlation_context: Arc<RwLock<Option<String>>>,
     /// Inner state.
     inner: Arc<SpawnerInner>,
 }
@@ -290,7 +290,7 @@ impl RunLoopSpawner {
     pub fn new() -> Self {
         Self {
             state_provider: None,
-            correlation_context: RwLock::new(None),
+            correlation_context: Arc::new(RwLock::new(None)),
             inner: Arc::new(SpawnerInner::new()),
         }
     }
@@ -299,7 +299,7 @@ impl RunLoopSpawner {
     pub fn with_state_provider(state_provider: Arc<dyn SpawnerStateProvider>) -> Self {
         Self {
             state_provider: Some(state_provider),
-            correlation_context: RwLock::new(None),
+            correlation_context: Arc::new(RwLock::new(None)),
             inner: Arc::new(SpawnerInner::new()),
         }
     }
@@ -307,6 +307,11 @@ impl RunLoopSpawner {
     /// Get the inner state (for sharing with RunLoop).
     pub fn inner(&self) -> Arc<SpawnerInner> {
         self.inner.clone()
+    }
+
+    /// Get Arc reference to correlation context (for CorrelationGuard).
+    fn correlation_context_arc(&self) -> Arc<RwLock<Option<String>>> {
+        self.correlation_context.clone()
     }
 
     /// Set the current correlation context.
@@ -577,34 +582,77 @@ impl RunLoopSpawner {
 
 /// Correlation guard for scoped correlation ID.
 ///
-/// Automatically clears the correlation context when dropped.
+/// Automatically restores the previous correlation context when dropped.
+///
+/// # Design Note
+///
+/// Since we can't await in Drop, we use `tokio::task::block_in_place` to
+/// synchronously restore the context when running in a multi-threaded runtime.
+/// For single-threaded runtimes, we spawn a task to restore the context.
 pub struct CorrelationGuard<'a> {
     spawner: &'a RunLoopSpawner,
-    previous: Option<String>,
+    /// Previous context to restore. Wrapped in Option<Option<String>> where:
+    /// - Some(previous) = need to restore `previous` on drop
+    /// - None = already restored via restore(), don't restore again
+    previous: Option<Option<String>>,
 }
 
 impl<'a> CorrelationGuard<'a> {
     /// Create a new correlation guard.
+    ///
+    /// Saves the current correlation context and sets a new one.
+    /// When the guard is dropped, the previous context is restored.
     pub async fn new(spawner: &'a RunLoopSpawner, correlation_id: String) -> Self {
         let previous = spawner.correlation_context().await;
         spawner
             .set_correlation_context(Some(correlation_id))
             .await;
-        Self { spawner, previous }
+        Self {
+            spawner,
+            previous: Some(previous),
+        }
+    }
+
+    /// Manually restore the previous correlation context.
+    ///
+    /// Call this method instead of relying on Drop if you want to ensure
+    /// the context is restored synchronously in an async context.
+    /// This consumes the guard without triggering Drop's restore logic.
+    pub async fn restore(mut self) {
+        if let Some(previous) = self.previous.take() {
+            self.spawner.set_correlation_context(previous).await;
+        }
+        // When self is dropped, previous is None, so Drop won't overwrite
     }
 }
 
 impl<'a> Drop for CorrelationGuard<'a> {
     fn drop(&mut self) {
-        // Note: We can't await in Drop, so we use blocking approach
-        // In practice, this is fine as it's just setting a value
-        let previous = self.previous.take();
-        let spawner = self.spawner;
+        // If previous was already taken (via restore()), skip restoration
+        let Some(previous) = self.previous.take() else {
+            return;
+        };
+
+        // Try to use block_in_place for multi-threaded runtime
+        // This allows us to synchronously acquire the write lock
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
+                // Safe to block in multi-threaded runtime
+                let context = self.spawner.correlation_context_arc();
+                tokio::task::block_in_place(|| {
+                    handle.block_on(async {
+                        *context.write().await = previous;
+                    });
+                });
+                return;
+            }
+        }
+
+        // Fallback: spawn a task to restore (best-effort for current_thread runtime)
+        // Clone what we need since we can't move spawner
+        let context = self.spawner.correlation_context_arc();
         tokio::spawn(async move {
-            // This is a bit of a hack - we spawn a task to reset the context
-            // In practice, you might want to use a different approach
-            let _ = previous;
-            let _ = spawner;
+            *context.write().await = previous;
         });
     }
 }
@@ -658,6 +706,62 @@ mod tests {
 
         spawner.set_correlation_context(None).await;
         assert!(spawner.correlation_context().await.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_correlation_guard_restores_context() {
+        let spawner = RunLoopSpawner::new();
+
+        // Set initial context
+        spawner
+            .set_correlation_context(Some("original".to_string()))
+            .await;
+
+        {
+            // Create guard with new context
+            let _guard = CorrelationGuard::new(&spawner, "scoped".to_string()).await;
+
+            // Inside scope, context should be "scoped"
+            assert_eq!(
+                spawner.correlation_context().await,
+                Some("scoped".to_string())
+            );
+        }
+        // Guard is dropped here
+
+        // Small delay to allow async restore if needed
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        // Context should be restored to "original"
+        assert_eq!(
+            spawner.correlation_context().await,
+            Some("original".to_string())
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_correlation_guard_manual_restore() {
+        let spawner = RunLoopSpawner::new();
+
+        spawner
+            .set_correlation_context(Some("original".to_string()))
+            .await;
+
+        let guard = CorrelationGuard::new(&spawner, "scoped".to_string()).await;
+
+        assert_eq!(
+            spawner.correlation_context().await,
+            Some("scoped".to_string())
+        );
+
+        // Manual restore
+        guard.restore().await;
+
+        // Context should be immediately restored
+        assert_eq!(
+            spawner.correlation_context().await,
+            Some("original".to_string())
+        );
     }
 
     #[tokio::test]

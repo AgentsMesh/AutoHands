@@ -2,6 +2,7 @@
 //!
 //! This module provides types for OpenAI API compatibility.
 //! Note: OpenAI compatibility is deprecated in favor of the native task API.
+#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 

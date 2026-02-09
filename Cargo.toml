@@ -31,10 +31,12 @@ autohands-protocols = { workspace = true }
 autohands-provider-anthropic = { path = "crates/extensions/provider-anthropic" }
 serde_json = { workspace = true }
 autohands-provider-ark = { path = "crates/extensions/provider-ark" }
+autohands-channel-web = { path = "crates/extensions/channel-web" }
 tokio = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
 dirs = { workspace = true }
 nix = { version = "0.29", features = ["signal"] }
 
@@ -79,6 +81,7 @@ members = [
     "crates/extensions/memory-hybrid",
     "crates/extensions/tools-image",
     "crates/extensions/tools-skill",
+    "crates/extensions/channel-web",
 ]
 
 [workspace.package]
@@ -110,6 +113,7 @@ anyhow = "1.0"
 # Logging and tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
 
 # HTTP and networking
 axum = { version = "0.8", features = ["ws", "macros"] }

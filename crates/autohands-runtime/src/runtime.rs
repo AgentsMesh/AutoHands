@@ -13,6 +13,7 @@ use autohands_protocols::tool::AbortSignal;
 use autohands_protocols::types::Message;
 
 use crate::agent_loop::{AgentLoop, AgentLoopConfig};
+use crate::history::HistoryManager;
 use crate::session::SessionManager;
 use crate::transcript::TranscriptWriter;
 
@@ -49,6 +50,7 @@ pub struct AgentRuntime {
     provider_registry: Arc<ProviderRegistry>,
     tool_registry: Arc<ToolRegistry>,
     session_manager: Arc<SessionManager>,
+    history_manager: Arc<HistoryManager>,
     agents: DashMap<String, Arc<dyn Agent>>,
     running: DashMap<String, AgentHandle>,
     concurrency_semaphore: Arc<Semaphore>,
@@ -66,11 +68,17 @@ impl AgentRuntime {
             provider_registry,
             tool_registry,
             session_manager: Arc::new(SessionManager::new()),
+            history_manager: Arc::new(HistoryManager::new()),
             agents: DashMap::new(),
             running: DashMap::new(),
             concurrency_semaphore: Arc::new(Semaphore::new(config.max_concurrent)),
             config,
         }
+    }
+
+    /// Get history manager.
+    pub fn history_manager(&self) -> &Arc<HistoryManager> {
+        &self.history_manager
     }
 
     /// Register an agent.
@@ -136,21 +144,36 @@ impl AgentRuntime {
             },
         );
 
-        // Create context with optional transcript
-        let ctx = AgentContext::new(session_id).with_history(Vec::new());
+        // Get conversation history for this session
+        let history = self.history_manager.get(session_id);
+        let history_messages = history.messages().to_vec();
+
+        // Create context with history from HistoryManager
+        let ctx = AgentContext::new(session_id).with_history(history_messages);
         let ctx = AgentContext {
             abort_signal,
             ..ctx
         };
+
+        // Record user message to history
+        self.history_manager.push(session_id, message.clone());
 
         // Create and run agent loop with transcript
         let agent_loop = AgentLoop::new(
             self.provider_registry.clone(),
             self.tool_registry.clone(),
             self.config.default_loop_config.clone(),
-        ).with_transcript(transcript);
+        )
+        .with_transcript(transcript);
 
         let result = agent_loop.run(agent.as_ref(), ctx, message).await;
+
+        // Record agent response messages to history
+        if let Ok(ref messages) = result {
+            for msg in messages {
+                self.history_manager.push(session_id, msg.clone());
+            }
+        }
 
         // Remove from running
         self.running.remove(session_id);
@@ -183,6 +206,11 @@ impl AgentRuntime {
     /// Get session manager.
     pub fn session_manager(&self) -> &Arc<SessionManager> {
         &self.session_manager
+    }
+
+    /// Clear conversation history for a session.
+    pub fn clear_history(&self, session_id: &str) {
+        self.history_manager.clear(session_id);
     }
 }
 
@@ -389,5 +417,51 @@ mod tests {
         };
         assert_eq!(handle.session_id, "test-session");
         assert!(!handle.abort_signal.is_aborted());
+    }
+
+    #[test]
+    fn test_history_manager_access() {
+        let provider_registry = Arc::new(ProviderRegistry::new());
+        let tool_registry = Arc::new(ToolRegistry::new());
+        let runtime = AgentRuntime::new(provider_registry, tool_registry, Default::default());
+
+        let hm = runtime.history_manager();
+        // Should be able to access history manager and it starts empty
+        assert!(hm.get("nonexistent").is_empty());
+    }
+
+    #[test]
+    fn test_clear_history() {
+        let provider_registry = Arc::new(ProviderRegistry::new());
+        let tool_registry = Arc::new(ToolRegistry::new());
+        let runtime = AgentRuntime::new(provider_registry, tool_registry, Default::default());
+
+        // Manually add some history
+        runtime.history_manager().push("session-1", Message::user("Hello"));
+        runtime.history_manager().push("session-1", Message::assistant("Hi"));
+        assert_eq!(runtime.history_manager().get("session-1").len(), 2);
+
+        // Clear and verify
+        runtime.clear_history("session-1");
+        assert!(runtime.history_manager().get("session-1").is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_execute_records_history() {
+        let provider_registry = Arc::new(ProviderRegistry::new());
+        let tool_registry = Arc::new(ToolRegistry::new());
+        let runtime = AgentRuntime::new(provider_registry, tool_registry, Default::default());
+
+        let agent = Arc::new(MockAgent::new("test-agent"));
+        runtime.register_agent(agent);
+
+        // First message
+        let message = Message::user("Hello");
+        let result = runtime.execute("test-agent", "session-1", message).await;
+        assert!(result.is_ok());
+
+        // History should contain the user message and agent response
+        let history = runtime.history_manager().get("session-1");
+        assert!(history.len() >= 2); // At least user message + agent response
     }
 }

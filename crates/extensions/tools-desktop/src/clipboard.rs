@@ -18,6 +18,7 @@ pub enum ClipboardError {
 }
 
 /// Trait for clipboard operations (allows mocking in tests).
+#[allow(dead_code)]
 pub trait ClipboardBackend {
     /// Get text from clipboard.
     fn get_text(&mut self) -> Result<String, ClipboardError>;

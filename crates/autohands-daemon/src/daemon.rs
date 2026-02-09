@@ -322,8 +322,7 @@ impl Daemon {
     /// Daemonize the process (Unix only).
     #[cfg(unix)]
     fn daemonize(&self) -> Result<(), DaemonError> {
-        use nix::sys::stat::Mode;
-        use nix::unistd::{chdir, close, dup2, fork, setsid, ForkResult};
+        use nix::unistd::{chdir, dup2, fork, setsid, ForkResult};
         use std::os::unix::io::AsRawFd;
 
         info!("Daemonizing process...");

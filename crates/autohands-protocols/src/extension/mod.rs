@@ -2,12 +2,12 @@
 //!
 //! Extensions are the fundamental building blocks of AutoHands.
 
-mod traits;
-mod manifest;
 mod context;
-mod event;
+mod manifest;
+mod task;
+mod traits;
 
-pub use traits::*;
-pub use manifest::*;
 pub use context::*;
-pub use event::*;
+pub use manifest::*;
+pub use task::*;
+pub use traits::*;

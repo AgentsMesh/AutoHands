@@ -16,7 +16,6 @@ mod filesystem;
 mod parser;
 mod watcher;
 
-pub use adapter::{AdapterRegistry, SkillAdapter};
 pub use filesystem::FilesystemLoader;
 pub use parser::parse_skill_markdown;
 pub use watcher::SkillWatcher;

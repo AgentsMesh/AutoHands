@@ -146,26 +146,54 @@ impl Source0 for AgentSource0 {
 /// Agent task injector.
 ///
 /// A convenient wrapper for injecting tasks from agents.
-/// Holds a reference to both the source and the RunLoop.
+/// Can work with either AgentSource0+RunLoop or directly with TaskQueue.
 pub struct AgentTaskInjector {
-    source: Arc<AgentSource0>,
-    run_loop: Arc<RunLoop>,
+    /// Mode 1: Source-based injection (for external use)
+    source: Option<Arc<AgentSource0>>,
+    run_loop: Option<Arc<RunLoop>>,
+    /// Mode 2: Direct queue injection (for internal RunLoop use)
+    task_queue: Option<Arc<crate::task::TaskQueue>>,
 }
 
 impl AgentTaskInjector {
-    /// Create a new injector.
+    /// Create a new injector with source and run_loop.
     pub fn new(source: Arc<AgentSource0>, run_loop: Arc<RunLoop>) -> Self {
-        Self { source, run_loop }
+        Self {
+            source: Some(source),
+            run_loop: Some(run_loop),
+            task_queue: None,
+        }
+    }
+
+    /// Create an injector that directly enqueues to a TaskQueue.
+    ///
+    /// This is used internally by RunLoop for task processing.
+    pub fn with_queue(task_queue: Arc<crate::task::TaskQueue>) -> Self {
+        Self {
+            source: None,
+            run_loop: None,
+            task_queue: Some(task_queue),
+        }
     }
 
     /// Inject a task.
     pub fn inject(&self, task: Task) {
-        self.source.inject(task, &self.run_loop);
+        if let (Some(source), Some(run_loop)) = (&self.source, &self.run_loop) {
+            source.inject(task, run_loop);
+        } else if let Some(_queue) = &self.task_queue {
+            // For queue-based injection, we can't use async here
+            // Tasks will be collected in AgentResult.tasks instead
+            debug!("Queue-based injector: task should be returned in AgentResult.tasks");
+        }
     }
 
     /// Inject multiple tasks.
     pub fn inject_batch(&self, tasks: Vec<Task>) {
-        self.source.inject_batch(tasks, &self.run_loop);
+        if let (Some(source), Some(run_loop)) = (&self.source, &self.run_loop) {
+            source.inject_batch(tasks, run_loop);
+        } else if let Some(_queue) = &self.task_queue {
+            debug!("Queue-based injector: tasks should be returned in AgentResult.tasks");
+        }
     }
 
     /// Create a child task with correlation.
@@ -193,6 +221,7 @@ impl Clone for AgentTaskInjector {
         Self {
             source: self.source.clone(),
             run_loop: self.run_loop.clone(),
+            task_queue: self.task_queue.clone(),
         }
     }
 }

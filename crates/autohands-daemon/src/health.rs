@@ -2,13 +2,12 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::config::DaemonConfig;
-use crate::error::DaemonError;
 
 /// Health status of the daemon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -25,4 +25,4 @@ pub use lifecycle::{
     KernelState, LifecycleHook, LifecycleManager, RunLoopControl, RunLoopLifecycleHook,
     ShutdownSignal,
 };
-pub use registry::{ExtensionRegistry, ProviderRegistry, ToolRegistry};
+pub use registry::{ChannelRegistry, ExtensionRegistry, ProviderRegistry, ToolRegistry};

@@ -7,10 +7,14 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use tracing::{error, info, warn};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-use autohands_core::registry::{ProviderRegistry, ToolRegistry};
+use autohands_core::registry::{ChannelRegistry, ProviderRegistry, ToolRegistry};
 use autohands_core::Kernel;
+
+// Channel extensions
+use autohands_channel_web::{WebChannel, WebChannelConfig};
 use autohands_daemon::{Daemon, DaemonConfig, DaemonError};
 use autohands_api::{AppState, InterfaceConfig, InterfaceServer};
 use autohands_provider_anthropic::AnthropicProvider;
@@ -64,9 +68,13 @@ enum Commands {
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
 
-        /// Server port
+        /// Server port (API)
         #[arg(long, default_value_t = 8080)]
         port: u16,
+
+        /// Web channel port (WebSocket UI)
+        #[arg(long, default_value_t = 8081)]
+        web_port: u16,
     },
 
     /// Daemon management commands
@@ -221,13 +229,67 @@ fn default_pid_file() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/tmp/autohands.pid"))
 }
 
+/// Get the .autohands directory path.
+fn autohands_dir() -> PathBuf {
+    dirs::home_dir()
+        .map(|h| h.join(".autohands"))
+        .unwrap_or_else(|| PathBuf::from(".autohands"))
+}
+
+/// Initialize tracing with console and file output.
+///
+/// Log files are written to ~/.autohands/debug/ with daily rotation and 100MB max size.
+fn init_tracing() -> Result<(), Box<dyn std::error::Error>> {
+    // Create log directory
+    let log_dir = autohands_dir().join("debug");
+    std::fs::create_dir_all(&log_dir)?;
+
+    // Create rolling file appender (daily rotation, max 100MB implied by daily rotation)
+    // tracing-appender doesn't support size-based rotation natively, but daily rotation
+    // combined with file naming helps manage log files
+    let file_appender = RollingFileAppender::builder()
+        .rotation(Rotation::DAILY)
+        .filename_prefix("autohands")
+        .filename_suffix("log")
+        .max_log_files(30) // Keep 30 days of logs
+        .build(&log_dir)?;
+
+    // Create a non-blocking writer for file output
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+    // Store the guard in a static to keep it alive for the program duration
+    // This is a common pattern for tracing-appender
+    static GUARD: std::sync::OnceLock<tracing_appender::non_blocking::WorkerGuard> =
+        std::sync::OnceLock::new();
+    let _ = GUARD.set(_guard);
+
+    // Build subscriber with both console and file layers
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        // Console layer (human-readable text format with colors)
+        .with(
+            fmt::layer()
+                .with_target(true)
+                .with_ansi(true)
+        )
+        // File layer (text format without colors)
+        .with(
+            fmt::layer()
+                .with_writer(non_blocking)
+                .with_ansi(false)
+        )
+        .init();
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer())
-        .with(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    // Initialize tracing with file and console output
+    init_tracing()?;
 
     let cli = Cli::parse();
 
@@ -236,8 +298,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
 
     match cli.command {
-        None | Some(Commands::Run { .. }) => {
-            run_server(work_dir).await
+        None => {
+            // Default: run server with default ports
+            run_server(work_dir, "127.0.0.1".to_string(), 8080, 8081).await
+        }
+        Some(Commands::Run { host, port, web_port }) => {
+            run_server(work_dir, host, port, web_port).await
         }
         Some(Commands::Daemon { action }) => {
             handle_daemon_command(action, work_dir).await
@@ -249,7 +315,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Run the server in foreground.
-async fn run_server(work_dir: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_server(
+    work_dir: PathBuf,
+    host: String,
+    port: u16,
+    web_port: u16,
+) -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting AutoHands v{}", env!("CARGO_PKG_VERSION"));
     info!("Working directory: {}", work_dir.display());
 
@@ -260,6 +331,7 @@ async fn run_server(work_dir: PathBuf) -> Result<(), Box<dyn std::error::Error>>
     // Initialize registries
     let provider_registry = Arc::new(ProviderRegistry::new());
     let tool_registry = Arc::new(ToolRegistry::new());
+    let channel_registry = Arc::new(ChannelRegistry::new());
 
     // Register providers based on available API keys
     register_providers(&provider_registry).await;
@@ -295,10 +367,9 @@ async fn run_server(work_dir: PathBuf) -> Result<(), Box<dyn std::error::Error>>
     ).await;
 
     // Configure transcript directory for session recording
-    let transcript_dir = dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("autohands")
-        .join("transcripts");
+    // Use ~/.autohands/sessions for agent session transcripts
+    let transcript_dir = autohands_dir().join("sessions");
+    std::fs::create_dir_all(&transcript_dir).expect("Failed to create sessions directory");
     info!("Session transcripts will be saved to: {}", transcript_dir.display());
 
     // Create app state
@@ -310,21 +381,69 @@ async fn run_server(work_dir: PathBuf) -> Result<(), Box<dyn std::error::Error>>
         transcript_dir,
     ));
 
-    // Start interface server
-    // Create a minimal RunLoop state for the HTTP server
-    use autohands_runloop::{TaskQueue, TaskQueueConfig};
+    // Create and start RunLoop
+    use autohands_runloop::{ChannelBridge, RunLoop, RunLoopConfig, RunLoopMode};
     use autohands_api::RunLoopState;
-    use tokio::sync::mpsc;
+    use std::time::Duration;
 
-    let (tx, _rx) = mpsc::channel(16);
-    let queue_config = TaskQueueConfig::default();
-    let task_queue = Arc::new(TaskQueue::new(queue_config, 100));
-    let runloop_state = Arc::new(RunLoopState::new(tx, task_queue));
+    let runloop_config = RunLoopConfig::default();
+    let run_loop = Arc::new(RunLoop::new(runloop_config));
 
-    let config = InterfaceConfig::new("127.0.0.1", 8080);
+    // Create RunLoop state for HTTP API
+    let runloop_state = Arc::new(RunLoopState::from_runloop(run_loop.clone()));
+
+    // Initialize Web Channel
+    let web_channel_config = WebChannelConfig {
+        host: host.clone(),
+        port: web_port,
+    };
+    let web_channel = Arc::new(WebChannel::new("web", web_channel_config));
+    channel_registry
+        .register(web_channel.clone())
+        .expect("Failed to register web channel");
+
+    // Start all channels
+    channel_registry
+        .start_all()
+        .await
+        .expect("Failed to start channels");
+    info!("Web Channel started at http://{}:{}", host, web_port);
+
+    // Create and start channel bridge (connects channels to RunLoop)
+    let channel_bridge = ChannelBridge::new(
+        channel_registry.clone(),
+        run_loop.clone(),
+    );
+    channel_bridge.start().await;
+    info!("ChannelBridge started, listening on {} channel(s)", channel_registry.list_ids().len());
+
+    // Configure RunLoop with handler and channel registry
+    use autohands_runloop::RuntimeAgentEventHandler;
+    let handler = Arc::new(RuntimeAgentEventHandler::new(agent_runtime.clone(), "general"));
+    run_loop.set_handler(handler).await;
+    run_loop.set_channel_registry(channel_registry.clone()).await;
+    info!("RunLoop configured with agent handler and channel registry");
+
+    // Start RunLoop in background (run for 100 years = effectively forever)
+    let run_loop_handle = run_loop.clone();
+    tokio::spawn(async move {
+        info!("Starting RunLoop...");
+        // 100 years in seconds (effectively infinite for our purposes)
+        let forever = Duration::from_secs(100 * 365 * 24 * 60 * 60);
+        match run_loop_handle.run_in_mode(RunLoopMode::Default, forever).await {
+            Ok(result) => info!("RunLoop finished: {:?}", result),
+            Err(e) => error!("RunLoop error: {}", e),
+        }
+    });
+
+    let config = InterfaceConfig::new(&host, port);
     let server = InterfaceServer::new(config, state, runloop_state);
 
-    info!("AutoHands ready at http://{}", server.addr());
+    info!("AutoHands ready:");
+    info!("  API Server:    http://{}:{}", host, port);
+    info!("  Web Channel:   http://{}:{}", host, web_port);
+    info!("");
+    info!("API Endpoints:");
     info!("  POST /tasks          - 提交任务");
     info!("  GET  /tasks/{{id}}     - 查询状态");
     info!("  POST /webhook/{{id}}   - 触发 Webhook");

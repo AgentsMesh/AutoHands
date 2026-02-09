@@ -1,61 +1,57 @@
 //! Extension registry for managing loaded extensions.
 
-use dashmap::DashMap;
 use std::sync::Arc;
 
 use autohands_protocols::error::ExtensionError;
 use autohands_protocols::extension::{Extension, ExtensionManifest};
 
+use super::base::{BaseRegistry, Registerable};
+
+// Implement Registerable for Extension trait objects
+impl Registerable for dyn Extension {
+    fn registry_id(&self) -> &str {
+        &self.manifest().id
+    }
+}
+
 /// Registry for managing extensions.
+///
+/// Built on `BaseRegistry` for consistent behavior.
 pub struct ExtensionRegistry {
-    extensions: DashMap<String, Arc<dyn Extension>>,
+    inner: BaseRegistry<dyn Extension>,
 }
 
 impl ExtensionRegistry {
     /// Create a new extension registry.
     pub fn new() -> Self {
         Self {
-            extensions: DashMap::new(),
+            inner: BaseRegistry::new(),
         }
     }
 
     /// Register an extension.
     pub fn register(&self, extension: Arc<dyn Extension>) -> Result<(), ExtensionError> {
-        let manifest = extension.manifest();
-        let id = manifest.id.clone();
-
-        if self.extensions.contains_key(&id) {
-            return Err(ExtensionError::AlreadyRegistered(id));
-        }
-
-        self.extensions.insert(id, extension);
-        Ok(())
+        self.inner.register(extension)
     }
 
     /// Unregister an extension.
     pub fn unregister(&self, id: &str) -> Result<(), ExtensionError> {
-        self.extensions
-            .remove(id)
-            .ok_or_else(|| ExtensionError::NotFound(id.to_string()))?;
-        Ok(())
+        self.inner.unregister(id)
     }
 
     /// Get an extension by ID.
     pub fn get(&self, id: &str) -> Option<Arc<dyn Extension>> {
-        self.extensions.get(id).map(|e| e.clone())
+        self.inner.get(id)
     }
 
     /// List all registered extensions.
     pub fn list(&self) -> Vec<ExtensionManifest> {
-        self.extensions
-            .iter()
-            .map(|e| e.manifest().clone())
-            .collect()
+        self.inner.iter().map(|e| e.manifest().clone()).collect()
     }
 
     /// Check if an extension is registered.
     pub fn contains(&self, id: &str) -> bool {
-        self.extensions.contains_key(id)
+        self.inner.contains(id)
     }
 }
 

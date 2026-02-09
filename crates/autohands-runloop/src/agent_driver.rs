@@ -14,16 +14,25 @@ use tokio::sync::Semaphore;
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
-use crate::agent_source::{AgentTaskInjector, AgentSource0};
+use crate::agent_source::{AgentSource0, AgentTaskInjector};
 use crate::config::RunLoopConfig;
 use crate::error::{RunLoopError, RunLoopResult};
 use crate::task::{Task, TaskPriority, TaskSource};
 use crate::RunLoop;
 
-/// Agent execution session.
+/// Agent execution context - tracks the state of an agent execution session.
+///
+/// # Note on Session Management
+///
+/// This struct tracks runtime state for agent execution. For persistent
+/// session data storage, use `Session` from `autohands-runtime`.
+///
+/// The distinction:
+/// - `AgentExecutionContext`: Runtime state (status, tasks_processed, started_at)
+/// - `Session`: Persistent data storage (key-value pairs, last_active)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentSession {
-    /// Session ID.
+pub struct AgentExecutionContext {
+    /// Execution context ID.
     pub id: String,
 
     /// Agent name/type.
@@ -32,28 +41,28 @@ pub struct AgentSession {
     /// Correlation ID for task chain.
     pub correlation_id: String,
 
-    /// Session start time.
+    /// Execution start time.
     pub started_at: DateTime<Utc>,
 
     /// Current status.
-    pub status: SessionStatus,
+    pub status: ExecutionStatus,
 
     /// Number of tasks processed.
     pub tasks_processed: u64,
 }
 
-/// Session status.
+/// Execution status for an agent context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SessionStatus {
-    /// Session is active.
+pub enum ExecutionStatus {
+    /// Execution is active.
     Active,
-    /// Session is paused.
+    /// Execution is paused.
     Paused,
-    /// Session completed successfully.
+    /// Execution completed successfully.
     Completed,
-    /// Session failed.
+    /// Execution failed.
     Failed,
-    /// Session was cancelled.
+    /// Execution was cancelled.
     Cancelled,
 }
 
@@ -187,8 +196,8 @@ pub struct AgentDriver {
     /// Worker pool semaphore.
     worker_semaphore: Arc<Semaphore>,
 
-    /// Active sessions.
-    sessions: DashMap<String, AgentSession>,
+    /// Active execution contexts.
+    contexts: DashMap<String, AgentExecutionContext>,
 
     /// Running flag.
     running: AtomicBool,
@@ -212,7 +221,7 @@ impl AgentDriver {
             agent_source,
             handler: Arc::new(NoOpEventHandler),
             worker_semaphore: Arc::new(Semaphore::new(config.workers.max_workers)),
-            sessions: DashMap::new(),
+            contexts: DashMap::new(),
             running: AtomicBool::new(false),
             tasks_processed: AtomicU64::new(0),
             config,
@@ -242,9 +251,9 @@ impl AgentDriver {
         self.running.load(Ordering::SeqCst)
     }
 
-    /// Get active session count.
-    pub fn active_sessions(&self) -> usize {
-        self.sessions.len()
+    /// Get active execution context count.
+    pub fn active_contexts(&self) -> usize {
+        self.contexts.len()
     }
 
     /// Get total tasks processed.
@@ -390,37 +399,41 @@ impl AgentDriver {
         task
     }
 
-    /// Get a session by ID.
-    pub fn get_session(&self, session_id: &str) -> Option<AgentSession> {
-        self.sessions.get(session_id).map(|s| s.clone())
+    /// Get an execution context by ID.
+    pub fn get_context(&self, context_id: &str) -> Option<AgentExecutionContext> {
+        self.contexts.get(context_id).map(|c| c.clone())
     }
 
-    /// Create a new session.
-    pub fn create_session(&self, agent: impl Into<String>, correlation_id: impl Into<String>) -> String {
-        let session_id = Uuid::new_v4().to_string();
-        let session = AgentSession {
-            id: session_id.clone(),
+    /// Create a new execution context.
+    pub fn create_context(
+        &self,
+        agent: impl Into<String>,
+        correlation_id: impl Into<String>,
+    ) -> String {
+        let context_id = Uuid::new_v4().to_string();
+        let context = AgentExecutionContext {
+            id: context_id.clone(),
             agent: agent.into(),
             correlation_id: correlation_id.into(),
             started_at: Utc::now(),
-            status: SessionStatus::Active,
+            status: ExecutionStatus::Active,
             tasks_processed: 0,
         };
 
-        self.sessions.insert(session_id.clone(), session);
-        session_id
+        self.contexts.insert(context_id.clone(), context);
+        context_id
     }
 
-    /// Update session status.
-    pub fn update_session_status(&self, session_id: &str, status: SessionStatus) {
-        if let Some(mut session) = self.sessions.get_mut(session_id) {
-            session.status = status;
+    /// Update execution context status.
+    pub fn update_context_status(&self, context_id: &str, status: ExecutionStatus) {
+        if let Some(mut context) = self.contexts.get_mut(context_id) {
+            context.status = status;
         }
     }
 
-    /// Remove a session.
-    pub fn remove_session(&self, session_id: &str) {
-        self.sessions.remove(session_id);
+    /// Remove an execution context.
+    pub fn remove_context(&self, context_id: &str) {
+        self.contexts.remove(context_id);
     }
 }
 
@@ -436,7 +449,7 @@ mod tests {
 
         let driver = AgentDriver::new(run_loop, source, config);
         assert!(!driver.is_running());
-        assert_eq!(driver.active_sessions(), 0);
+        assert_eq!(driver.active_contexts(), 0);
     }
 
     #[tokio::test]
@@ -491,26 +504,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_agent_driver_session() {
+    async fn test_agent_driver_execution_context() {
         let run_loop = Arc::new(RunLoop::new(RunLoopConfig::default()));
         let source = Arc::new(AgentSource0::new("agent"));
         let config = RunLoopConfig::default();
 
         let driver = AgentDriver::new(run_loop, source, config);
 
-        let session_id = driver.create_session("general", "chain-1");
-        assert_eq!(driver.active_sessions(), 1);
+        let context_id = driver.create_context("general", "chain-1");
+        assert_eq!(driver.active_contexts(), 1);
 
-        let session = driver.get_session(&session_id).unwrap();
-        assert_eq!(session.agent, "general");
-        assert_eq!(session.status, SessionStatus::Active);
+        let context = driver.get_context(&context_id).unwrap();
+        assert_eq!(context.agent, "general");
+        assert_eq!(context.status, ExecutionStatus::Active);
 
-        driver.update_session_status(&session_id, SessionStatus::Completed);
-        let session = driver.get_session(&session_id).unwrap();
-        assert_eq!(session.status, SessionStatus::Completed);
+        driver.update_context_status(&context_id, ExecutionStatus::Completed);
+        let context = driver.get_context(&context_id).unwrap();
+        assert_eq!(context.status, ExecutionStatus::Completed);
 
-        driver.remove_session(&session_id);
-        assert_eq!(driver.active_sessions(), 0);
+        driver.remove_context(&context_id);
+        assert_eq!(driver.active_contexts(), 0);
     }
 
     #[test]

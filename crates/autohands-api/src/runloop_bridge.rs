@@ -8,11 +8,10 @@ use std::sync::Arc;
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
 use tracing::{error, info};
 use uuid::Uuid;
 
-use autohands_runloop::{TaskQueue, HttpTaskInjector, WakeupSignal};
+use autohands_runloop::{RunLoop, Task};
 
 use crate::state::AppState;
 
@@ -31,22 +30,19 @@ pub trait RunLoopBridge: Send + Sync {
 /// This provides the necessary components for submitting tasks
 /// to the RunLoop from HTTP handlers.
 pub struct RunLoopState {
-    /// HTTP task injector for submitting tasks to RunLoop.
-    pub injector: HttpTaskInjector,
-    /// Task queue for direct task submission.
-    pub task_queue: Arc<TaskQueue>,
-    /// Wakeup signal sender.
-    pub wakeup_tx: mpsc::Sender<WakeupSignal>,
+    /// Reference to the RunLoop.
+    run_loop: Arc<RunLoop>,
 }
 
 impl RunLoopState {
-    /// Create a new RunLoop state.
-    pub fn new(run_loop_tx: mpsc::Sender<WakeupSignal>, task_queue: Arc<TaskQueue>) -> Self {
-        Self {
-            injector: HttpTaskInjector::new(run_loop_tx.clone(), task_queue.clone()),
-            task_queue,
-            wakeup_tx: run_loop_tx,
-        }
+    /// Create a new RunLoop state from a RunLoop instance.
+    pub fn from_runloop(run_loop: Arc<RunLoop>) -> Self {
+        Self { run_loop }
+    }
+
+    /// Get the RunLoop reference.
+    pub fn run_loop(&self) -> &Arc<RunLoop> {
+        &self.run_loop
     }
 
     /// Submit a task to the RunLoop.
@@ -55,22 +51,16 @@ impl RunLoopState {
         task_type: &str,
         payload: serde_json::Value,
     ) -> Result<(), crate::error::InterfaceError> {
-        use autohands_runloop::Task;
-
         let task = Task::new(task_type, payload);
-        self.task_queue.enqueue(task).await.map_err(|e| {
+        self.run_loop.inject_task(task).await.map_err(|e| {
             crate::error::InterfaceError::RunLoopInjectionFailed(format!(
-                "Failed to enqueue task: {}",
+                "Failed to inject task: {}",
                 e
             ))
         })?;
 
-        // Wake up the RunLoop (best effort - task is already queued)
-        let _ = self.wakeup_tx
-            .send(WakeupSignal::Explicit {
-                reason: format!("New task: {}", task_type),
-            })
-            .await;
+        // Wake up the RunLoop
+        self.run_loop.wakeup(format!("New task: {}", task_type));
 
         Ok(())
     }
@@ -125,11 +115,14 @@ pub async fn submit_task(
         req.task.chars().take(50).collect::<String>()
     );
 
-    match state
-        .injector
-        .inject_task(&req.task, &session_id, agent_id)
-        .await
-    {
+    // Build task payload
+    let payload = serde_json::json!({
+        "prompt": req.task,
+        "session_id": session_id.clone(),
+        "agent_id": agent_id,
+    });
+
+    match state.submit_task("agent:execute", payload).await {
         Ok(()) => {
             info!("Task submitted to RunLoop: session={}", session_id);
 

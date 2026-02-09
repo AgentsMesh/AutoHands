@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use tokio::fs::{File, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
-use tracing::{debug, error, warn};
+use tracing::debug;
 use uuid::Uuid;
 
 /// Transcript entry types.

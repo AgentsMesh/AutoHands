@@ -6,9 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use autohands_protocols::error::ExtensionError;
-use autohands_protocols::extension::{
-    Extension, ExtensionContext, ExtensionManifest, Provides, ProviderRegistryAccess,
-};
+use autohands_protocols::extension::{Extension, ExtensionContext, ExtensionManifest, Provides};
 use autohands_protocols::types::Version;
 
 use crate::AnthropicProvider;

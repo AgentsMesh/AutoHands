@@ -5,6 +5,7 @@ use std::collections::{BinaryHeap, HashMap};
 use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
+use autohands_protocols::channel::ReplyAddress;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -13,7 +14,7 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::config::TaskQueueConfig;
-use crate::error::{TaskChainError, RunLoopError, RunLoopResult};
+use crate::error::{RunLoopError, RunLoopResult, TaskChainError};
 
 /// Task priority levels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -105,6 +106,12 @@ pub struct Task {
 
     /// Maximum retries.
     pub max_retries: u32,
+
+    /// Reply address for routing responses back to the source channel.
+    /// Enables the "reply to origin" pattern - messages are routed back
+    /// to where they came from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<ReplyAddress>,
 }
 
 impl Task {
@@ -123,6 +130,7 @@ impl Task {
             metadata: HashMap::new(),
             retry_count: 0,
             max_retries: 3,
+            reply_to: None,
         }
     }
 
@@ -165,6 +173,15 @@ impl Task {
     /// Set max retries.
     pub fn with_max_retries(mut self, max: u32) -> Self {
         self.max_retries = max;
+        self
+    }
+
+    /// Set reply address for routing responses back to the source channel.
+    ///
+    /// This enables the "reply to origin" pattern where responses are automatically
+    /// routed back to the channel and target that originated the request.
+    pub fn with_reply_to(mut self, reply_to: ReplyAddress) -> Self {
+        self.reply_to = Some(reply_to);
         self
     }
 
@@ -597,5 +614,62 @@ mod tests {
         let id1 = task.ensure_correlation_id();
         let id2 = task.ensure_correlation_id();
         assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn test_task_with_reply_to() {
+        let reply_to = ReplyAddress::new("web", "conn-123");
+        let task = Task::new("agent:execute", serde_json::json!({"prompt": "hello"}))
+            .with_reply_to(reply_to.clone());
+
+        assert!(task.reply_to.is_some());
+        let task_reply_to = task.reply_to.unwrap();
+        assert_eq!(task_reply_to.channel_id, "web");
+        assert_eq!(task_reply_to.target, "conn-123");
+    }
+
+    #[test]
+    fn test_task_reply_to_serialization() {
+        let reply_to = ReplyAddress::with_thread("telegram", "chat-456", "thread-789");
+        let task = Task::new("test", serde_json::Value::Null).with_reply_to(reply_to);
+
+        let json = serde_json::to_string(&task).unwrap();
+        assert!(json.contains("telegram"));
+        assert!(json.contains("chat-456"));
+        assert!(json.contains("thread-789"));
+    }
+
+    #[test]
+    fn test_task_without_reply_to_serialization() {
+        let task = Task::new("test", serde_json::Value::Null);
+
+        let json = serde_json::to_string(&task).unwrap();
+        // reply_to should be skipped when None
+        assert!(!json.contains("reply_to"));
+    }
+
+    #[test]
+    fn test_task_reply_to_deserialization() {
+        let json = r#"{
+            "id": "00000000-0000-0000-0000-000000000000",
+            "task_type": "test",
+            "payload": null,
+            "priority": "Normal",
+            "source": "User",
+            "created_at": "2024-01-01T00:00:00Z",
+            "metadata": {},
+            "retry_count": 0,
+            "max_retries": 3,
+            "reply_to": {
+                "channel_id": "web",
+                "target": "conn-123"
+            }
+        }"#;
+
+        let task: Task = serde_json::from_str(json).unwrap();
+        assert!(task.reply_to.is_some());
+        let reply_to = task.reply_to.unwrap();
+        assert_eq!(reply_to.channel_id, "web");
+        assert_eq!(reply_to.target, "conn-123");
     }
 }

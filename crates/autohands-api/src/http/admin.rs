@@ -1,4 +1,5 @@
 //! Admin management endpoints.
+#![allow(dead_code)]
 
 use axum::{
     extract::{Path, State},

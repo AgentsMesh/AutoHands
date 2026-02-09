@@ -1,53 +1,53 @@
 //! Memory backend registry.
 
-use dashmap::DashMap;
 use std::sync::Arc;
 
 use autohands_protocols::error::ExtensionError;
 use autohands_protocols::extension::MemoryRegistryAccess;
 use autohands_protocols::memory::MemoryBackend;
 
+use super::base::{BaseRegistry, Registerable};
+
+// Implement Registerable for MemoryBackend trait objects
+impl Registerable for dyn MemoryBackend {
+    fn registry_id(&self) -> &str {
+        self.id()
+    }
+}
+
 /// Registry for managing memory backends.
+///
+/// Built on `BaseRegistry` for consistent behavior.
 pub struct MemoryRegistry {
-    backends: DashMap<String, Arc<dyn MemoryBackend>>,
+    inner: BaseRegistry<dyn MemoryBackend>,
 }
 
 impl MemoryRegistry {
     /// Create a new memory registry.
     pub fn new() -> Self {
         Self {
-            backends: DashMap::new(),
+            inner: BaseRegistry::new(),
         }
     }
 
     /// Register a memory backend.
     pub fn register(&self, backend: Arc<dyn MemoryBackend>) -> Result<(), ExtensionError> {
-        let id = backend.id().to_string();
-
-        if self.backends.contains_key(&id) {
-            return Err(ExtensionError::AlreadyRegistered(id));
-        }
-
-        self.backends.insert(id, backend);
-        Ok(())
+        self.inner.register(backend)
     }
 
     /// Unregister a memory backend.
     pub fn unregister(&self, id: &str) -> Result<(), ExtensionError> {
-        self.backends
-            .remove(id)
-            .ok_or_else(|| ExtensionError::NotFound(id.to_string()))?;
-        Ok(())
+        self.inner.unregister(id)
     }
 
     /// Get a memory backend by ID.
     pub fn get(&self, id: &str) -> Option<Arc<dyn MemoryBackend>> {
-        self.backends.get(id).map(|b| b.clone())
+        self.inner.get(id)
     }
 
     /// List all backend IDs.
     pub fn list_ids(&self) -> Vec<String> {
-        self.backends.iter().map(|b| b.id().to_string()).collect()
+        self.inner.list_ids()
     }
 }
 

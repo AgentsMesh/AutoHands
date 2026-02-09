@@ -16,7 +16,6 @@ use axum::{
 
 use crate::http::handlers::{agent_abort, agent_run, agent_status};
 use crate::runloop_bridge::HybridAppState;
-use crate::state::AppState;
 use crate::webhook::{
     delete_webhook, get_webhook, handle_github_webhook, handle_webhook, list_webhooks,
     register_webhook,

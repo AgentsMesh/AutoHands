@@ -10,7 +10,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 
 use crate::error::RunLoopResult;
 use crate::task::Task;
@@ -166,18 +166,39 @@ impl Source0Base {
 /// Source1 receiver wrapper.
 ///
 /// Wraps a Source1 trait object with its message receiver.
+/// The receiver is wrapped in Arc<Mutex<...>> to allow concurrent
+/// async waiting on multiple receivers without holding the parent lock.
 pub struct Source1Receiver {
     /// The source implementation.
     pub source: Arc<dyn Source1>,
 
-    /// Message receiver.
-    pub receiver: mpsc::Receiver<PortMessage>,
+    /// Message receiver (wrapped for concurrent access).
+    pub receiver: Arc<Mutex<mpsc::Receiver<PortMessage>>>,
 }
 
 impl Source1Receiver {
     /// Create a new Source1Receiver.
     pub fn new(source: Arc<dyn Source1>, receiver: mpsc::Receiver<PortMessage>) -> Self {
-        Self { source, receiver }
+        Self {
+            source,
+            receiver: Arc::new(Mutex::new(receiver)),
+        }
+    }
+
+    /// Try to receive a message without blocking.
+    pub fn try_recv(&self) -> Option<PortMessage> {
+        // Use try_lock to avoid blocking
+        if let Ok(mut guard) = self.receiver.try_lock() {
+            guard.try_recv().ok()
+        } else {
+            None
+        }
+    }
+
+    /// Async receive a message.
+    /// Returns the receiver Arc for use in concurrent waiting.
+    pub fn receiver_arc(&self) -> Arc<Mutex<mpsc::Receiver<PortMessage>>> {
+        self.receiver.clone()
     }
 }
 
