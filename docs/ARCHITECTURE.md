@@ -1,32 +1,32 @@
-# AutoHands 架构设计文档
+# AutoHands Architecture Design Document
 
-> 全能自主工作智能体框架 - Rust 实现
+> Omnipotent Autonomous Agent Framework - Rust Implementation
 
-## 一、项目愿景
+## 1. Project Vision
 
-AutoHands 是一个高度可扩展的全能 AI Agent 框架，核心设计理念：
+AutoHands is a highly extensible omnipotent AI Agent framework with the following core design principles:
 
-1. **核心极简** - 核心只定义协议和接口，不实现具体能力
-2. **一切皆扩展** - 工具、技能、渠道、Provider 都是扩展
-3. **协议优先** - 通过 trait（而非继承）定义扩展契约
-4. **自描述** - 扩展自带元数据，支持自动发现和文档生成
-5. **热插拔** - 运行时加载/卸载扩展（通过 dylib 或 WASM）
-6. **渐进式披露** - 从零配置到完全定制，按需深入
+1. **Minimal Core** - Core only defines protocols and interfaces, not concrete implementations
+2. **Everything is an Extension** - Tools, skills, channels, and providers are all extensions
+3. **Protocol First** - Extension contracts defined via traits (not inheritance)
+4. **Self-Describing** - Extensions carry metadata, supporting auto-discovery and documentation generation
+5. **Hot-Pluggable** - Runtime loading/unloading of extensions (via dylib or WASM)
+6. **Progressive Disclosure** - From zero configuration to full customization, as needed
 
-## 二、系统架构
+## 2. System Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              Gateway Layer                                   │
 │         HTTP API (OpenAI Compatible) │ WebSocket │ Channel Adapters         │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│                              Event Bus                                       │
-│                    (Async Message Passing & Pub/Sub)                        │
+│                              Task Queue                                      │
+│                    (Priority Queue & Delayed Tasks)                         │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                              Core Runtime                                    │
 │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐           │
 │  │   Kernel    │ │  Extension  │ │   Session   │ │   Config    │           │
-│  │  (微内核)   │ │  Registry   │ │   Manager   │ │   Manager   │           │
+│  │ (Microkernel)│ │  Registry   │ │   Manager   │ │   Manager   │           │
 │  └─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘           │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                              Protocol Layer (Traits)                         │
@@ -36,156 +36,173 @@ AutoHands 是一个高度可扩展的全能 AI Agent 框架，核心设计理念
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                              Extension Layer                                 │
 │  ┌─────────────────────┐ ┌─────────────────────┐ ┌─────────────────────┐   │
-│  │   Builtin (静态)    │ │   Dynamic (dylib)   │ │    WASM (沙箱)      │   │
-│  │ tools-*, provider-* │ │   用户自定义扩展     │ │   跨语言扩展        │   │
+│  │   Builtin (Static)  │ │   Dynamic (dylib)   │ │    WASM (Sandbox)   │   │
+│  │ tools-*, provider-* │ │   User Extensions   │ │  Cross-lang Plugins │   │
 │  └─────────────────────┘ └─────────────────────┘ └─────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## 三、目录结构
+## 3. Directory Structure
 
 ```
 autohands/
-├── Cargo.toml                    # Workspace 配置
+├── Cargo.toml                    # Workspace configuration
 ├── Cargo.lock
 ├── README.md
 ├── LICENSE
 │
-├── docs/                         # 文档
-│   ├── ARCHITECTURE.md           # 架构设计 (本文件)
-│   ├── ROADMAP.md               # 开发路线图
-│   ├── EXTENSION_GUIDE.md       # 扩展开发指南
-│   └── API.md                   # API 文档
+├── docs/                         # Documentation
+│   ├── ARCHITECTURE.md           # Architecture design (this file)
+│   ├── ROADMAP.md               # Development roadmap
+│   ├── EXTENSION_GUIDE.md       # Extension development guide
+│   └── API.md                   # API documentation
 │
-├── crates/                       # 核心 crates
-│   ├── autohands-core/          # 微内核、事件总线、上下文
-│   ├── autohands-protocols/     # 协议定义 (traits)
-│   ├── autohands-runtime/       # Agent 运行时
-│   ├── autohands-gateway/       # Gateway 服务器
-│   ├── autohands-config/        # 配置管理
-│   ├── autohands-macros/        # 过程宏 (简化扩展开发)
+├── crates/                       # Core crates
+│   ├── autohands-core/          # Microkernel, task queue, context
+│   ├── autohands-protocols/     # Protocol definitions (traits)
+│   ├── autohands-runtime/       # Agent runtime
+│   ├── autohands-api/           # API server
+│   ├── autohands-runloop/       # Event loop, task scheduling
+│   ├── autohands-daemon/        # Daemon management
+│   ├── autohands-config/        # Configuration management
+│   ├── autohands-macros/        # Procedural macros
 │   │
-│   └── extensions/              # 内置扩展
-│       ├── tools-filesystem/    # 文件系统工具
-│       ├── tools-shell/         # Shell 执行工具
-│       ├── tools-code/          # 代码编辑工具
-│       ├── tools-search/        # 搜索工具 (grep, glob)
-│       ├── tools-web/           # Web 工具 (fetch, search)
+│   └── extensions/              # Built-in extensions
+│       ├── tools-filesystem/    # Filesystem tools
+│       ├── tools-shell/         # Shell execution tools
+│       ├── tools-browser/       # Browser automation tools
+│       ├── tools-desktop/       # Desktop control tools
+│       ├── tools-code/          # Code editing tools
+│       ├── tools-search/        # Search tools (grep, glob)
+│       ├── tools-web/           # Web tools (fetch, search)
 │       ├── provider-anthropic/  # Anthropic Provider
 │       ├── provider-openai/     # OpenAI Provider
 │       ├── provider-gemini/     # Gemini Provider
-│       ├── memory-sqlite/       # SQLite 记忆后端
-│       ├── memory-vector/       # 向量记忆后端
-│       ├── channel-webhook/     # Webhook 渠道
-│       ├── channel-telegram/    # Telegram 渠道
-│       ├── agent-general/       # 通用 Agent
-│       ├── agent-coder/         # 编码 Agent
-│       ├── skills-bundled/      # 内置技能
-│       └── mcp-bridge/          # MCP 协议桥接
+│       ├── provider-ark/        # Volcengine Ark Provider
+│       ├── memory-sqlite/       # SQLite memory backend
+│       ├── memory-vector/       # Vector memory backend
+│       ├── channel-webhook/     # Webhook channel
+│       ├── agent-general/       # General Agent
+│       ├── skills-bundled/      # Built-in skills
+│       ├── skills-dynamic/      # Dynamic skill loader
+│       └── mcp-bridge/          # MCP protocol bridge
 │
-├── src/                         # 主程序入口
+├── src/                         # Main program entry
 │   └── main.rs
 │
-├── config/                      # 默认配置
+├── config/                      # Default configuration
 │   └── default.toml
 │
-├── skills/                      # 技能定义 (Markdown)
-│   ├── bundled/                # 内置技能
-│   └── examples/               # 示例技能
+├── skills/                      # Skill definitions (Markdown)
+│   ├── bundled/                # Built-in skills
+│   └── examples/               # Example skills
 │
-└── tests/                       # 集成测试
+└── tests/                       # Integration tests
     └── integration/
 ```
 
-## 四、核心模块设计
+## 4. Core Module Design
 
-### 4.1 autohands-protocols (协议层)
+### 4.1 autohands-protocols (Protocol Layer)
 
-定义所有扩展必须实现的 trait，**只有接口，没有实现**。
-
-```rust
-// 核心 trait 列表
-pub trait Extension        // 扩展基础接口
-pub trait Tool             // 工具接口
-pub trait LLMProvider      // LLM 提供者接口
-pub trait Channel          // 消息渠道接口
-pub trait MemoryBackend    // 记忆后端接口
-pub trait Agent            // Agent 接口
-pub trait SkillLoader      // 技能加载器接口
-```
-
-### 4.2 autohands-core (核心层)
-
-微内核实现，负责扩展生命周期管理和组件通信。
+Defines all traits that extensions must implement. **Interfaces only, no implementations**.
 
 ```rust
-pub struct Kernel          // 微内核
-pub struct EventBus        // 事件总线
-pub struct ExecutionContext // 执行上下文
-pub struct ExtensionRegistry // 扩展注册表
-pub struct ToolRegistry    // 工具注册表
-pub struct ProviderRegistry // Provider 注册表
-pub struct ChannelRegistry // 渠道注册表
+// Core trait list
+pub trait Extension        // Extension base interface
+pub trait Tool             // Tool interface
+pub trait LLMProvider      // LLM provider interface
+pub trait Channel          // Message channel interface
+pub trait MemoryBackend    // Memory backend interface
+pub trait Agent            // Agent interface
+pub trait SkillLoader      // Skill loader interface
 ```
 
-### 4.3 autohands-runtime (运行时层)
+### 4.2 autohands-core (Core Layer)
 
-Agent 执行运行时，实现 Agentic Loop。
+Microkernel implementation, responsible for extension lifecycle management and component communication.
 
 ```rust
-pub struct AgentRuntime    // Agent 运行时
-pub struct AgentLoop       // Agentic 循环
-pub struct SessionManager  // 会话管理
-pub struct HistoryManager  // 历史管理
-pub struct ContextBuilder  // 上下文构建器
+pub struct Kernel          // Microkernel
+pub struct ExecutionContext // Execution context
+pub struct ExtensionRegistry // Extension registry
+pub struct ToolRegistry    // Tool registry
+pub struct ProviderRegistry // Provider registry
+pub struct ChannelRegistry // Channel registry
 ```
 
-### 4.4 autohands-gateway (网关层)
+### 4.3 autohands-runtime (Runtime Layer)
 
-HTTP/WebSocket 服务器，对外暴露 API。
+Agent execution runtime, implements the Agentic Loop.
 
 ```rust
-pub struct GatewayServer   // Gateway 服务器
-pub struct HttpHandler     // HTTP 处理器
-pub struct WsHandler       // WebSocket 处理器
-pub struct ChannelManager  // 渠道管理器
+pub struct AgentRuntime    // Agent runtime
+pub struct AgentLoop       // Agentic loop
+pub struct SessionManager  // Session management
+pub struct HistoryManager  // History management
+pub struct ContextBuilder  // Context builder
 ```
 
-### 4.5 autohands-config (配置层)
+### 4.4 autohands-runloop (RunLoop Layer)
 
-配置加载、验证、热重载。
+Event-driven task scheduling and execution.
 
 ```rust
-pub struct ConfigManager   // 配置管理器
-pub struct ConfigSchema    // 配置 Schema
-pub struct ConfigWatcher   // 配置监听器 (热重载)
+pub struct RunLoop         // Event loop
+pub struct TaskQueue       // Task queue
+pub struct Task            // Task definition
+pub struct AgentDriver     // Agent execution driver
+pub trait Source0          // Polling event source
+pub trait Source1          // Async event source
+pub trait Observer         // Event observer
 ```
 
-### 4.6 autohands-macros (宏)
+### 4.5 autohands-api (API Layer)
 
-过程宏，简化扩展开发。
+HTTP/WebSocket server, exposes external APIs.
 
 ```rust
-#[extension]               // 扩展定义宏
-#[tool]                    // 工具定义宏
-#[provider]                // Provider 定义宏
+pub struct InterfaceServer // API server
+pub struct HttpHandler     // HTTP handler
+pub struct WsHandler       // WebSocket handler
+pub struct RunLoopBridge   // RunLoop bridge
 ```
 
-## 五、关键设计决策
+### 4.6 autohands-config (Configuration Layer)
 
-### 5.1 扩展加载策略
+Configuration loading, validation, hot-reloading.
 
-| 类型 | 加载方式 | 适用场景 |
-|------|---------|---------|
-| **Builtin** | 静态编译 | 核心扩展，性能最优 |
-| **Dynamic** | dylib 动态加载 | 用户自定义 Rust 扩展 |
-| **WASM** | wasmtime 运行 | 跨语言扩展，沙箱隔离 |
+```rust
+pub struct ConfigManager   // Configuration manager
+pub struct ConfigSchema    // Configuration schema
+pub struct ConfigWatcher   // Configuration watcher (hot-reload)
+```
 
-初期只实现 Builtin，后续根据需要添加 Dynamic 和 WASM 支持。
+### 4.7 autohands-macros (Macros)
 
-### 5.2 错误处理策略
+Procedural macros to simplify extension development.
 
-使用 `thiserror` 定义错误类型，`anyhow` 用于应用层错误传播。
+```rust
+#[extension]               // Extension definition macro
+#[tool]                    // Tool definition macro
+#[provider]                // Provider definition macro
+```
+
+## 5. Key Design Decisions
+
+### 5.1 Extension Loading Strategy
+
+| Type | Loading Method | Use Case |
+|------|---------------|----------|
+| **Builtin** | Static compilation | Core extensions, best performance |
+| **Dynamic** | dylib dynamic loading | User-defined Rust extensions |
+| **WASM** | wasmtime runtime | Cross-language extensions, sandboxed |
+
+Initially only Builtin is implemented; Dynamic and WASM support added as needed.
+
+### 5.2 Error Handling Strategy
+
+Use `thiserror` for error type definitions, `anyhow` for application-level error propagation.
 
 ```rust
 #[derive(Debug, thiserror::Error)]
@@ -200,21 +217,21 @@ pub enum CoreError {
 }
 ```
 
-### 5.3 异步运行时
+### 5.3 Async Runtime
 
-使用 `tokio` 作为异步运行时，所有 I/O 操作都是异步的。
+Uses `tokio` as the async runtime; all I/O operations are async.
 
-### 5.4 序列化
+### 5.4 Serialization
 
-使用 `serde` 进行序列化，配置使用 `toml`，API 使用 `json`。
+Uses `serde` for serialization; configuration uses `toml`, API uses `json`.
 
-### 5.5 日志和追踪
+### 5.5 Logging and Tracing
 
-使用 `tracing` 进行结构化日志和分布式追踪。
+Uses `tracing` for structured logging and distributed tracing.
 
-## 六、数据流
+## 6. Data Flow
 
-### 6.1 用户请求处理流程
+### 6.1 User Request Processing Flow
 
 ```
 User Request
@@ -226,24 +243,24 @@ User Request
        │
        ▼
 ┌─────────────┐
-│  EventBus   │  ← 发布 "request:received" 事件
+│ RunLoop     │  ← Convert to Task, enqueue
+│ Bridge      │
 └──────┬──────┘
        │
        ▼
 ┌─────────────┐
-│   Session   │  ← 获取/创建会话
-│   Manager   │
+│  TaskQueue  │  ← Priority scheduling
 └──────┬──────┘
        │
        ▼
 ┌─────────────┐
-│    Agent    │  ← 选择合适的 Agent
-│   Runtime   │
+│   Agent     │  ← Select appropriate Agent
+│   Driver    │
 └──────┬──────┘
        │
        ▼
 ┌─────────────┐
-│   Agentic   │  ← 执行循环
+│   Agentic   │  ← Execute loop
 │    Loop     │
 └──────┬──────┘
        │
@@ -260,18 +277,18 @@ User Request
 
 ```
 while !finished {
-    1. 构建上下文 (历史 + 工具 + 技能)
-    2. 调用 LLM
-    3. 解析响应
-       ├── 文本输出 → 流式返回
-       ├── 工具调用 → 执行工具 → 结果加入历史
-       └── 完成信号 → 退出循环
-    4. 检查终止条件 (max_turns, timeout, abort)
-    5. 可选: 历史压缩
+    1. Build context (history + tools + skills)
+    2. Call LLM
+    3. Parse response
+       ├── Text output → Stream return
+       ├── Tool call → Execute tool → Add result to history
+       └── Completion signal → Exit loop
+    4. Check termination conditions (max_turns, timeout, abort)
+    5. Optional: History compression
 }
 ```
 
-## 七、扩展协议详细设计
+## 7. Extension Protocol Details
 
 ### 7.1 Extension Manifest
 
@@ -340,9 +357,9 @@ pub trait MemoryBackend: Send + Sync {
 }
 ```
 
-## 八、配置设计
+## 8. Configuration Design
 
-### 8.1 配置文件结构
+### 8.1 Configuration File Structure
 
 ```toml
 # config.toml
@@ -369,8 +386,8 @@ backend = "sqlite"
 path = "~/.autohands/memory.db"
 
 [extensions]
-# 静态扩展通过 feature flags 控制
-# 动态扩展在这里配置
+# Static extensions controlled via feature flags
+# Dynamic extensions configured here
 paths = ["~/.autohands/extensions"]
 
 [channels.telegram]
@@ -382,13 +399,13 @@ paths = ["~/.autohands/skills", "./skills"]
 enabled = ["coding", "research", "writing"]
 ```
 
-### 8.2 环境变量支持
+### 8.2 Environment Variable Support
 
-配置值支持 `${VAR}` 语法引用环境变量。
+Configuration values support `${VAR}` syntax to reference environment variables.
 
-## 九、安全设计
+## 9. Security Design
 
-### 9.1 权限模型
+### 9.1 Permission Model
 
 ```rust
 pub enum Permission {
@@ -399,25 +416,25 @@ pub enum Permission {
 }
 ```
 
-### 9.2 执行审批
+### 9.2 Execution Approval
 
-高风险操作需要用户确认：
+High-risk operations require user confirmation:
 
 ```rust
 pub enum RiskLevel {
-    Low,      // 自动执行
-    Medium,   // 可配置是否确认
-    High,     // 必须确认
+    Low,      // Auto-execute
+    Medium,   // Configurable confirmation
+    High,     // Must confirm
 }
 ```
 
-### 9.3 沙箱隔离
+### 9.3 Sandbox Isolation
 
-WASM 扩展运行在 wasmtime 沙箱中，资源访问受限。
+WASM extensions run in wasmtime sandbox with restricted resource access.
 
-## 十、性能考量
+## 10. Performance Considerations
 
-### 10.1 编译优化
+### 10.1 Compilation Optimization
 
 ```toml
 # Cargo.toml
@@ -428,47 +445,47 @@ panic = "abort"
 strip = true
 ```
 
-### 10.2 异步优化
+### 10.2 Async Optimization
 
-- 使用 `tokio` 多线程运行时
-- 合理使用 `Arc<RwLock<T>>` 减少锁竞争
-- 流式处理避免内存峰值
+- Use `tokio` multi-threaded runtime
+- Use `Arc<RwLock<T>>` appropriately to reduce lock contention
+- Stream processing to avoid memory spikes
 
-### 10.3 内存优化
+### 10.3 Memory Optimization
 
-- 使用 `bytes` crate 处理大数据
-- 及时释放不需要的资源
-- 考虑使用 `jemalloc` 替代系统分配器
+- Use `bytes` crate for large data handling
+- Release unneeded resources promptly
+- Consider using `jemalloc` instead of system allocator
 
-## 十一、测试策略
+## 11. Testing Strategy
 
-### 11.1 单元测试
+### 11.1 Unit Tests
 
-每个 crate 内部的模块测试。
+Module tests within each crate.
 
-### 11.2 集成测试
+### 11.2 Integration Tests
 
-`tests/integration/` 目录下的端到端测试。
+End-to-end tests in `tests/integration/` directory.
 
-### 11.3 性能测试
+### 11.3 Performance Tests
 
-使用 `criterion` 进行基准测试。
+Benchmark tests using `criterion`.
 
-## 十二、文档和示例
+## 12. Documentation and Examples
 
-### 12.1 API 文档
+### 12.1 API Documentation
 
-使用 `cargo doc` 生成 Rust 文档。
+Generate Rust documentation using `cargo doc`.
 
-### 12.2 扩展开发指南
+### 12.2 Extension Development Guide
 
-`docs/EXTENSION_GUIDE.md` 详细说明如何开发扩展。
+`docs/EXTENSION_GUIDE.md` explains how to develop extensions in detail.
 
-### 12.3 示例扩展
+### 12.3 Example Extensions
 
-`crates/extensions/` 下的每个扩展都是示例。
+Each extension under `crates/extensions/` serves as an example.
 
 ---
 
-*文档版本: 0.1.0*
-*最后更新: 2026-02-07*
+*Document Version: 0.1.0*
+*Last Updated: 2026-02-09*
