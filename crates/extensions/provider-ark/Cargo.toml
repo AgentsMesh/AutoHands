@@ -1,0 +1,28 @@
+[package]
+name = "autohands-provider-ark"
+description = "AutoHands extension: Ark (ByteDance Volcengine) LLM provider"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+autohands-protocols = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+futures = { workspace = true }
+async-stream = "0.3"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+wiremock = "0.6"
+
+[[example]]
+name = "test_ark"
+path = "examples/test_ark.rs"

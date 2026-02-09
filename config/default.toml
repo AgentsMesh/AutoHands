@@ -1,0 +1,29 @@
+# AutoHands Default Configuration
+
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[agent]
+default = "general"
+max_turns = 50
+timeout_seconds = 300
+
+[providers.anthropic]
+api_key = "${ANTHROPIC_API_KEY}"
+default_model = "claude-sonnet-4-20250514"
+
+[providers.openai]
+api_key = "${OPENAI_API_KEY}"
+default_model = "gpt-4o"
+
+[memory]
+backend = "sqlite"
+path = "~/.autohands/memory.db"
+
+[extensions]
+paths = ["~/.autohands/extensions"]
+
+[skills]
+paths = ["~/.autohands/skills", "./skills"]
+enabled = ["coding", "research", "writing"]

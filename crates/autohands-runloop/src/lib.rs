@@ -1,0 +1,207 @@
+//! # AutoHands RunLoop
+//!
+//! RunLoop-driven event loop for the AutoHands 24/7 autonomous agent framework.
+//!
+//! ## Design Inspiration
+//!
+//! The RunLoop architecture is inspired by iOS CFRunLoop, a battle-tested
+//! event loop design with 20+ years of production experience:
+//!
+//! - **Mode isolation**: Different modes handle different event types
+//! - **Source0/Source1 dual-track**: Manual vs. port-triggered sources
+//! - **Observer phase notifications**: Entry → BeforeTimers → BeforeSources → BeforeWaiting → AfterWaiting → Exit
+//! - **Sleep/wake mechanism**: Efficient CPU usage through proper sleep/wake cycles
+//! - **Batch commit**: Similar to CATransaction, events are committed at BeforeWaiting
+//!
+//! ## Architecture
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────────────────────┐
+//! │                              Daemon Layer                                    │
+//! │  (autohands-daemon) - PID management, signal handling, health checks        │
+//! └────────────────────────────────────┬────────────────────────────────────────┘
+//!                                      │
+//! ┌────────────────────────────────────▼────────────────────────────────────────┐
+//! │                           RunLoop (永续运行)                                 │
+//! │  ┌────────────────────────────────────────────────────────────────────────┐ │
+//! │  │                         Mode Manager                                    │ │
+//! │  │   DefaultMode ─────┬── Source0: Scheduler, AgentEvents                 │ │
+//! │  │                    ├── Source1: WebSocket, Webhook, FileWatcher        │ │
+//! │  │                    └── Observers: Checkpoint, Metrics, Cleanup         │ │
+//! │  │   AgentProcessingMode ── Focus on Agent execution                      │ │
+//! │  │   BackgroundMode ──────── Low-priority maintenance tasks               │ │
+//! │  └────────────────────────────────────────────────────────────────────────┘ │
+//! └─────────────────────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! ## Key Components
+//!
+//! - [`RunLoop`]: The core event loop
+//! - [`RunLoopMode`]: Mode isolation (Default, AgentProcessing, Background)
+//! - [`RunLoopPhase`]: Execution phases (Entry, BeforeTimers, etc.)
+//! - [`Source0`]: Manually triggered event sources
+//! - [`Source1`]: Port-triggered event sources
+//! - [`RunLoopObserver`]: Phase observers
+//! - [`Task`]: Tasks flowing through the loop
+//! - [`Timer`]: High-level timer abstraction
+//! - [`AgentDriver`]: Agent execution integration
+//!
+//! ## Example
+//!
+//! ```rust,no_run
+//! use autohands_runloop::{RunLoop, RunLoopConfig, RunLoopMode};
+//! use std::sync::Arc;
+//! use std::time::Duration;
+//!
+//! #[tokio::main]
+//! async fn main() {
+//!     let config = RunLoopConfig::default();
+//!     let run_loop = Arc::new(RunLoop::new(config));
+//!
+//!     // Run with a timeout
+//!     let result = run_loop
+//!         .run_in_mode(RunLoopMode::Default, Duration::from_secs(60))
+//!         .await;
+//! }
+//! ```
+
+pub mod agent_driver;
+pub mod agent_source;
+pub mod config;
+pub mod cron_timer;
+pub mod error;
+pub mod task;
+pub mod integration;
+pub mod metrics;
+pub mod mode;
+pub mod observer;
+pub mod run_loop;
+pub mod source;
+pub mod spawner;
+pub mod timer;
+
+// Re-exports
+pub use agent_driver::{AgentDriver, AgentEventHandler, AgentResult, AgentSession, SessionStatus};
+pub use agent_source::{AgentTaskInjector, AgentSource0};
+pub use config::{TaskChainConfig, TaskQueueConfig, RetryConfig, RunLoopConfig, WorkerPoolConfig};
+pub use error::{TaskChainError, RunLoopError, RunLoopResult};
+pub use task::{Task, TaskChainTracker, TaskPriority, TaskQueue, TaskSource};
+pub use metrics::{MetricsSnapshot, RunLoopMetrics};
+pub use mode::{RunLoopMode, RunLoopPhase, RunLoopRunResult, RunLoopState};
+pub use observer::{
+    EventBatchCommitObserver, LoggingObserver, MetricsObserver, ObserverHandle,
+    ResourceCleanupObserver, RunLoopObserver, SpawnerObserver,
+};
+pub use run_loop::{RunLoop, WakeupSignal};
+pub use source::{PortMessage, Source0, Source0Base, Source1, Source1Receiver};
+pub use timer::{Timer, TimerBuilder};
+pub use cron_timer::{CronTimer, CronTimerBuilder, schedules as cron_schedules};
+pub use spawner::{
+    CorrelationGuard, RunLoopSpawner, SpawnedTaskHandle, SpawnerInner, SpawnerMetrics,
+    SpawnerStateProvider, TaskInfo, TaskState,
+};
+// Re-export CancellationToken for convenience
+pub use tokio_util::sync::CancellationToken;
+
+// Integration re-exports
+pub use integration::checkpoint::{
+    CheckpointError, CheckpointManager, CheckpointObserver, MemoryCheckpointManager,
+    RunLoopCheckpoint,
+};
+// Note: TaskSubmitter is implemented directly on RunLoop
+pub use integration::health::{
+    HealthCheckError, HealthCheckObserver, HealthCheckable, HealthStatus,
+    LivenessCheck, MemoryCheck, TaskQueueCheck,
+};
+pub use integration::scheduler::{JobInfo, SchedulerSource0, SchedulerTick};
+pub use integration::signal::{SignalEvent, SignalSender, SignalSource1};
+pub use integration::runtime::{RuntimeAgentEventHandler, RuntimeAgentEventHandlerBuilder};
+pub use integration::websocket::{HttpTaskInjector, WebSocketSender, WebSocketSource1, WsMessageType};
+
+// File watcher and webhook exports (trigger types are now in file_watcher module)
+pub use integration::file_watcher::{
+    FileChangeEvent, FileChangeType, FileWatcherConfig, FileWatcherManager, FileWatcherSource1,
+    FileWatcherTrigger, Trigger, TriggerError, TriggerEvent, TriggersConfig, WebhookConfig,
+};
+pub use integration::webhook::{WebhookEvent, WebhookSource1, WebhookTrigger};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn test_basic_runloop() {
+        let config = RunLoopConfig::default();
+        let run_loop = Arc::new(RunLoop::new(config));
+
+        assert_eq!(run_loop.state(), RunLoopState::Created);
+    }
+
+    #[tokio::test]
+    async fn test_runloop_with_timeout() {
+        let config = RunLoopConfig::default();
+        let run_loop = Arc::new(RunLoop::new(config));
+
+        let result = run_loop
+            .run_in_mode(RunLoopMode::Default, Duration::from_millis(50))
+            .await;
+
+        assert!(matches!(result, Ok(RunLoopRunResult::TimedOut)));
+    }
+
+    #[tokio::test]
+    async fn test_runloop_inject_task() {
+        let run_loop = Arc::new(RunLoop::default());
+
+        let task = Task::new("test:task", serde_json::json!({"key": "value"}))
+            .with_priority(TaskPriority::High)
+            .with_source(TaskSource::User);
+
+        run_loop.inject_task(task).await.unwrap();
+        assert_eq!(run_loop.pending_task_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_runloop_with_observer() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+
+        struct TestObserver {
+            counter: Arc<AtomicU32>,
+        }
+
+        #[async_trait::async_trait]
+        impl RunLoopObserver for TestObserver {
+            fn activities(&self) -> u32 {
+                RunLoopPhase::Entry as u32 | RunLoopPhase::Exit as u32
+            }
+
+            async fn on_phase(&self, _phase: RunLoopPhase, _run_loop: &RunLoop) {
+                self.counter.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let run_loop = Arc::new(RunLoop::default());
+        run_loop
+            .add_observer("test", Arc::new(TestObserver { counter: counter_clone }))
+            .await;
+
+        let run_loop_clone = run_loop.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            run_loop_clone.stop();
+        });
+
+        run_loop
+            .run_in_mode(RunLoopMode::Default, Duration::from_secs(1))
+            .await
+            .unwrap();
+
+        // Should have been called for Entry and Exit
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+}

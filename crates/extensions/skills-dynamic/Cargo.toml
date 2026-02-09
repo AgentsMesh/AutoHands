@@ -1,0 +1,27 @@
+[package]
+name = "autohands-skills-dynamic"
+description = "AutoHands extension: dynamic skills loading with hot-reload support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+autohands-protocols = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+notify = { workspace = true }
+walkdir = { workspace = true }
+which = "6.0"
+tar = "0.4"
+flate2 = "1.0"
+dirs = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util", "macros"] }

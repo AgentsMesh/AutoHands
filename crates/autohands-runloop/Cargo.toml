@@ -1,0 +1,47 @@
+[package]
+name = "autohands-runloop"
+description = "RunLoop-driven event loop for AutoHands 24/7 autonomous agent framework"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+autohands-protocols = { workspace = true }
+autohands-core = { workspace = true }
+autohands-runtime = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# Data structures
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Time and IDs
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Cron scheduling (for CronTimer)
+cron = { workspace = true }
+
+# File watching (for triggers integration)
+notify = { workspace = true }
+glob = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
+tempfile = { workspace = true }

@@ -1,0 +1,28 @@
+[package]
+name = "autohands-monitor"
+description = "System monitoring for AutoHands 24/7 autonomous agent framework"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+autohands-protocols = { workspace = true }
+autohands-core = { workspace = true }
+autohands-config = { workspace = true }
+
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+
+# HTTP for endpoints
+axum = { workspace = true }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }

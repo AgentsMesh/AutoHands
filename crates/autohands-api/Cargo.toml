@@ -1,0 +1,55 @@
+[package]
+name = "autohands-api"
+description = "Unified external API layer for AutoHands (HTTP/WebSocket/Webhook/Workflow)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Internal crates
+autohands-protocols = { workspace = true }
+autohands-core = { workspace = true }
+autohands-runtime = { workspace = true }
+autohands-runloop = { workspace = true }
+autohands-config = { workspace = true }
+
+# Async runtime
+async-trait = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# HTTP/WebSocket
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+
+# Data types
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+# Concurrent data structures
+dashmap = { workspace = true }
+
+# Directory utilities
+dirs = { workspace = true }
+
+# Streaming
+async-stream = "0.3"
+
+# Cron scheduling (for job module)
+cron = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+tempfile = { workspace = true }

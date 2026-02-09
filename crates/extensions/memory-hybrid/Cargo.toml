@@ -1,0 +1,27 @@
+[package]
+name = "autohands-memory-hybrid"
+description = "AutoHands extension: Hybrid memory backend combining vector and keyword search"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+autohands-protocols = { workspace = true }
+autohands-memory-vector = { path = "../memory-vector" }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tokio-rusqlite = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tempfile = { workspace = true }

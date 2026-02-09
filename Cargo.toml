@@ -1,0 +1,190 @@
+[package]
+name = "autohands"
+description = "Omnipotent Autonomous Agent Framework"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "autohands"
+path = "src/main.rs"
+
+[dependencies]
+autohands-core = { workspace = true }
+autohands-config = { workspace = true }
+autohands-runtime = { workspace = true }
+autohands-api = { workspace = true }
+autohands-daemon = { workspace = true }
+autohands-runloop = { workspace = true }
+autohands-tools-filesystem = { path = "crates/extensions/tools-filesystem" }
+autohands-tools-shell = { path = "crates/extensions/tools-shell" }
+autohands-tools-desktop = { path = "crates/extensions/tools-desktop" }
+autohands-tools-browser = { path = "crates/extensions/tools-browser" }
+autohands-tools-code = { path = "crates/extensions/tools-code" }
+autohands-tools-search = { path = "crates/extensions/tools-search" }
+autohands-tools-web = { path = "crates/extensions/tools-web" }
+autohands-agent-general = { path = "crates/extensions/agent-general" }
+autohands-skills-dynamic = { path = "crates/extensions/skills-dynamic" }
+autohands-tools-skill = { path = "crates/extensions/tools-skill" }
+autohands-protocols = { workspace = true }
+autohands-provider-anthropic = { path = "crates/extensions/provider-anthropic" }
+serde_json = { workspace = true }
+autohands-provider-ark = { path = "crates/extensions/provider-ark" }
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dirs = { workspace = true }
+nix = { version = "0.29", features = ["signal"] }
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/autohands-protocols",
+    "crates/autohands-core",
+    "crates/autohands-config",
+    "crates/autohands-macros",
+    "crates/autohands-runtime",
+    "crates/autohands-api",
+    # 24/7 Autonomous Agent modules
+    "crates/autohands-daemon",
+    "crates/autohands-runloop",
+    "crates/autohands-workqueue",
+    "crates/autohands-checkpoint",
+    "crates/autohands-monitor",
+    # Extensions
+    "crates/extensions/tools-filesystem",
+    "crates/extensions/tools-shell",
+    "crates/extensions/tools-search",
+    "crates/extensions/tools-web",
+    "crates/extensions/tools-code",
+    "crates/extensions/provider-anthropic",
+    "crates/extensions/provider-openai",
+    "crates/extensions/provider-gemini",
+    "crates/extensions/provider-ark",
+    "crates/extensions/memory-sqlite",
+    "crates/extensions/memory-vector",
+    "crates/extensions/memory-markdown",
+    "crates/extensions/agent-general",
+    "crates/extensions/skills-bundled",
+    "crates/extensions/skills-dynamic",
+    "crates/extensions/mcp-bridge",
+    "crates/extensions/channel-webhook",
+    "crates/extensions/tools-browser",
+    "crates/extensions/tools-desktop",
+    "crates/extensions/tools-cron",
+    "crates/extensions/tools-notify",
+    "crates/extensions/tools-agent",
+    "crates/extensions/memory-hybrid",
+    "crates/extensions/tools-image",
+    "crates/extensions/tools-skill",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["AutoHands Contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/autohands/autohands"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.43", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tokio-stream = "0.1"
+futures = "0.3"
+async-trait = "0.1"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+toml = "0.8"
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# HTTP and networking
+axum = { version = "0.8", features = ["ws", "macros"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+hyper = "1.5"
+
+# Data types
+uuid = { version = "1.11", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+bytes = "1.9"
+url = { version = "2.5", features = ["serde"] }
+
+# Validation and schema
+schemars = "0.8"
+jsonschema = "0.26"
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled"] }
+tokio-rusqlite = "0.6"
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Testing
+mockall = "0.13"
+wiremock = "0.6"
+tempfile = "3.14"
+
+# Proc macros
+syn = { version = "2.0", features = ["full", "extra-traits"] }
+quote = "1.0"
+proc-macro2 = "1.0"
+darling = "0.20"
+
+# Utilities
+once_cell = "1.20"
+parking_lot = "0.12"
+dashmap = "6.1"
+regex = "1.11"
+glob = "0.3"
+walkdir = "2.5"
+notify = "7.0"
+shellexpand = "3.1"
+
+# Internal crates
+autohands-protocols = { path = "crates/autohands-protocols" }
+autohands-core = { path = "crates/autohands-core" }
+autohands-config = { path = "crates/autohands-config" }
+autohands-macros = { path = "crates/autohands-macros" }
+autohands-runtime = { path = "crates/autohands-runtime" }
+autohands-daemon = { path = "crates/autohands-daemon" }
+autohands-runloop = { path = "crates/autohands-runloop" }
+autohands-workqueue = { path = "crates/autohands-workqueue" }
+autohands-checkpoint = { path = "crates/autohands-checkpoint" }
+autohands-monitor = { path = "crates/autohands-monitor" }
+autohands-api = { path = "crates/autohands-api" }
+autohands-skills-dynamic = { path = "crates/extensions/skills-dynamic" }
+
+# Cron scheduling
+cron = "0.15"
+
+# Directory utilities
+dirs = "6.0"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.dev.package."*"]
+opt-level = 3

@@ -1,0 +1,31 @@
+[package]
+name = "autohands-tools-browser"
+description = "AutoHands extension: Browser automation tools via CDP (Chrome DevTools Protocol)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+autohands-protocols = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+futures = { workspace = true }
+base64 = "0.22"
+dirs = "5.0"
+regex = "1.10"
+# CDP WebSocket client
+tokio-tungstenite = "0.26"
+# HTTP client for CDP endpoint discovery
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# URL parsing
+url = "2.5"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+base64 = "0.22"
