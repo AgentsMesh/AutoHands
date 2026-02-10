@@ -104,12 +104,10 @@ pub struct WebChannel {
     capabilities: ChannelCapabilities,
     /// Shared state.
     state: Arc<WebChannelState>,
-    /// Server shutdown signal.
-    #[allow(dead_code)]
-    shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
-    /// Server join handle.
-    #[allow(dead_code)]
-    server_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Server shutdown signal (kept for RAII drop behavior).
+    _shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Server join handle (kept for RAII drop behavior).
+    _server_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl WebChannel {
@@ -130,8 +128,8 @@ impl WebChannel {
                 max_message_length: Some(65536), // 64KB
             },
             state,
-            shutdown_tx: None,
-            server_handle: None,
+            _shutdown_tx: None,
+            _server_handle: None,
         }
     }
 

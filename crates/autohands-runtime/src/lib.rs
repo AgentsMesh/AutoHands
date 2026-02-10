@@ -3,8 +3,10 @@
 //! Agent execution runtime implementing the agentic loop.
 
 pub mod agent_loop;
+pub mod checkpoint;
 pub mod context_builder;
 pub mod history;
+pub mod memory_persistence;
 pub mod retry;
 pub mod runtime;
 pub mod session;
@@ -14,6 +16,7 @@ pub mod summarizer;
 pub mod transcript;
 
 pub use agent_loop::{AgentLoop, AgentLoopConfig};
+pub use checkpoint::{CheckpointData, CheckpointSupport};
 pub use context_builder::{ContextBuilder, ContextConfig};
 pub use history::HistoryManager;
 pub use retry::{is_retryable, RetryConfig, RetryProvider};

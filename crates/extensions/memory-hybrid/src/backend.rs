@@ -8,7 +8,7 @@ use chrono::Utc;
 use parking_lot::RwLock;
 use tracing::{debug, info};
 
-use autohands_memory_vector::{EmbeddingProvider, VectorMemoryBackend};
+use autohands_memory_vector::{Embedding, EmbeddingProvider, VectorMemoryBackend};
 use autohands_protocols::error::MemoryError;
 use autohands_protocols::memory::{MemoryBackend, MemoryEntry, MemoryQuery, MemorySearchResult};
 
@@ -40,6 +40,7 @@ pub struct HybridMemoryBackend {
     fts: FTSBackend,
     config: HybridMemoryConfig,
     entries: RwLock<HashMap<String, MemoryEntry>>,
+    embedder: Arc<dyn EmbeddingProvider>,
 }
 
 impl HybridMemoryBackend {
@@ -50,7 +51,7 @@ impl HybridMemoryBackend {
         config: HybridMemoryConfig,
     ) -> Result<Self, MemoryError> {
         let id = id.into();
-        let vector = VectorMemoryBackend::new(format!("{}-vector", id), embedder);
+        let vector = VectorMemoryBackend::new(format!("{}-vector", id), embedder.clone());
         let fts = FTSBackend::new().await?;
 
         Ok(Self {
@@ -59,10 +60,11 @@ impl HybridMemoryBackend {
             fts,
             config,
             entries: RwLock::new(HashMap::new()),
+            embedder,
         })
     }
 
-    /// Create with file-based FTS storage.
+    /// Create with file-based FTS storage (embeddings persisted to SQLite).
     pub async fn with_fts_path(
         id: impl Into<String>,
         embedder: Arc<dyn EmbeddingProvider>,
@@ -70,16 +72,51 @@ impl HybridMemoryBackend {
         config: HybridMemoryConfig,
     ) -> Result<Self, MemoryError> {
         let id = id.into();
-        let vector = VectorMemoryBackend::new(format!("{}-vector", id), embedder);
+        let vector = VectorMemoryBackend::new(format!("{}-vector", id), embedder.clone());
         let fts = FTSBackend::with_path(fts_path).await?;
 
-        Ok(Self {
+        let backend = Self {
             id,
             vector,
             fts,
             config,
             entries: RwLock::new(HashMap::new()),
-        })
+            embedder,
+        };
+
+        // Restore persisted embeddings from SQLite
+        backend.restore_embeddings().await?;
+
+        Ok(backend)
+    }
+
+    /// Restore embeddings and entries from SQLite on startup.
+    async fn restore_embeddings(&self) -> Result<(), MemoryError> {
+        let stored = self.fts.load_embeddings().await?;
+        if stored.is_empty() {
+            return Ok(());
+        }
+
+        let mut restored = 0;
+        for (memory_id, vector) in &stored {
+            let embedding = Embedding::new(vector.clone());
+            self.vector.restore_embedding(memory_id.clone(), embedding);
+
+            // Also restore the entry from FTS if available
+            if let Some(entry) = self.fts.get_entry(memory_id) {
+                self.entries.write().insert(memory_id.clone(), entry);
+            }
+
+            restored += 1;
+        }
+
+        if restored > 0 {
+            info!(
+                "Restored {} embeddings from persistent storage",
+                restored
+            );
+        }
+        Ok(())
     }
 
     /// Perform hybrid search combining vector and keyword results.
@@ -195,6 +232,22 @@ impl MemoryBackend for HybridMemoryBackend {
         self.vector.store(entry.clone()).await?;
         self.fts.index(&entry).await?;
 
+        // Persist embedding to SQLite for restart recovery
+        let embedding = self
+            .embedder
+            .embed(&entry.content)
+            .await
+            .map_err(|e| MemoryError::StorageError(e.to_string()))?;
+        let dimension = embedding.dimension;
+        if let Err(e) = self
+            .fts
+            .store_embedding(&id, &embedding.vector, "default", dimension)
+            .await
+        {
+            // Non-fatal: log and continue
+            debug!("Failed to persist embedding for {}: {}", id, e);
+        }
+
         // Store locally for retrieval
         self.entries.write().insert(id.clone(), entry);
 
@@ -213,6 +266,7 @@ impl MemoryBackend for HybridMemoryBackend {
     async fn delete(&self, id: &str) -> Result<(), MemoryError> {
         self.vector.delete(id).await?;
         self.fts.remove(id).await?;
+        let _ = self.fts.remove_embedding(id).await;
         self.entries.write().remove(id);
         debug!("Deleted entry from hybrid backend: {}", id);
         Ok(())

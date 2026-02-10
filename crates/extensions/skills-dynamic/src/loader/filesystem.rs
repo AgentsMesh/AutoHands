@@ -38,13 +38,6 @@ impl FilesystemLoader {
         }
     }
 
-    /// Set the maximum directory depth for skill discovery.
-    #[allow(dead_code)]
-    pub fn with_max_depth(mut self, depth: usize) -> Self {
-        self.max_depth = depth;
-        self
-    }
-
     /// Load all skills from a directory.
     ///
     /// Supports multiple formats through adapters:
@@ -87,7 +80,7 @@ impl FilesystemLoader {
     }
 
     /// Load a single skill from a path (file or directory).
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub async fn load_skill(&self, path: &Path) -> Result<Skill, SkillError> {
         if path.is_file() {
             self.load_single_file(path)
@@ -157,7 +150,7 @@ impl FilesystemLoader {
     }
 
     /// Load a directory skill.
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn load_directory_skill(&self, dir: &Path) -> Result<Skill, SkillError> {
         // Try all supported file names
         for file_name in &self.supported_files {

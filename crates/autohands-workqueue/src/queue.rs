@@ -9,7 +9,7 @@ use tracing::{debug, info};
 
 use crate::config::QueueConfig;
 use crate::error::QueueError;
-use crate::task::{Task, TaskPriority, TaskStatus};
+use crate::task::{Task, TaskStatus};
 use crate::store::{TaskStore, MemoryTaskStore};
 
 /// Wrapper for priority queue ordering.
@@ -185,6 +185,7 @@ impl TaskQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::task::TaskPriority;
 
     #[tokio::test]
     async fn test_queue_enqueue_dequeue() {

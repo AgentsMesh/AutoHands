@@ -17,6 +17,7 @@ mod loader;
 mod package;
 mod progressive;
 mod registry;
+mod skill_tools;
 
 pub use extension::DynamicSkillsExtension;
 pub use loader::{DynamicSkillLoader, SkillSource};

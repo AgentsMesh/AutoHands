@@ -7,10 +7,10 @@ use std::sync::Arc;
 use chrono::Utc;
 use parking_lot::RwLock;
 use tokio_rusqlite::Connection;
-use tracing::{debug, error};
+use tracing::debug;
 
 use autohands_protocols::error::MemoryError;
-use autohands_protocols::memory::{MemoryEntry, MemoryQuery, MemorySearchResult};
+use autohands_protocols::memory::MemoryEntry;
 
 /// FTS5 full-text search backend.
 pub struct FTSBackend {
@@ -33,7 +33,7 @@ impl FTSBackend {
             .await
             .map_err(|e| MemoryError::StorageError(e.to_string()))?;
 
-        // Initialize FTS5 table
+        // Initialize FTS5 table + embeddings tables
         conn.call(|conn| {
             conn.execute_batch(
                 r#"
@@ -43,6 +43,22 @@ impl FTSBackend {
                     memory_type,
                     tags,
                     tokenize='porter unicode61'
+                );
+
+                CREATE TABLE IF NOT EXISTS embeddings (
+                    memory_id TEXT PRIMARY KEY,
+                    vector BLOB NOT NULL,
+                    model TEXT NOT NULL,
+                    dimension INTEGER NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS embedding_cache (
+                    content_hash TEXT PRIMARY KEY,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    vector BLOB NOT NULL,
+                    created_at TEXT NOT NULL
                 );
                 "#,
             )?;
@@ -163,6 +179,129 @@ impl FTSBackend {
     pub fn get_entry(&self, id: &str) -> Option<MemoryEntry> {
         self.entries.read().get(id).cloned()
     }
+
+    // -----------------------------------------------------------------------
+    // Embedding persistence
+    // -----------------------------------------------------------------------
+
+    /// Store an embedding vector for a memory entry.
+    pub async fn store_embedding(
+        &self,
+        memory_id: &str,
+        vector: &[f32],
+        model: &str,
+        dimension: usize,
+    ) -> Result<(), MemoryError> {
+        let id = memory_id.to_string();
+        let blob = f32_vec_to_blob(vector);
+        let model = model.to_string();
+        let now = Utc::now().to_rfc3339();
+
+        self.conn
+            .call(move |conn| {
+                conn.execute(
+                    r#"INSERT OR REPLACE INTO embeddings (memory_id, vector, model, dimension, created_at)
+                       VALUES (?, ?, ?, ?, ?)"#,
+                    rusqlite::params![id, blob, model, dimension as i64, now],
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(|e| MemoryError::StorageError(format!("Failed to store embedding: {}", e)))
+    }
+
+    /// Load all stored embeddings. Returns Vec<(memory_id, vector)>.
+    pub async fn load_embeddings(&self) -> Result<Vec<(String, Vec<f32>)>, MemoryError> {
+        self.conn
+            .call(|conn| {
+                let mut stmt = conn.prepare("SELECT memory_id, vector FROM embeddings")?;
+                let rows: Vec<(String, Vec<f32>)> = stmt
+                    .query_map([], |row| {
+                        let id: String = row.get(0)?;
+                        let blob: Vec<u8> = row.get(1)?;
+                        Ok((id, blob_to_f32_vec(&blob)))
+                    })?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                Ok(rows)
+            })
+            .await
+            .map_err(|e| MemoryError::StorageError(format!("Failed to load embeddings: {}", e)))
+    }
+
+    /// Remove an embedding by memory ID.
+    pub async fn remove_embedding(&self, memory_id: &str) -> Result<(), MemoryError> {
+        let id = memory_id.to_string();
+        self.conn
+            .call(move |conn| {
+                conn.execute(
+                    "DELETE FROM embeddings WHERE memory_id = ?",
+                    rusqlite::params![id],
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(|e| MemoryError::StorageError(format!("Failed to remove embedding: {}", e)))
+    }
+
+    /// Look up a cached embedding by content hash.
+    pub async fn get_cached_embedding(&self, content_hash: &str) -> Result<Option<Vec<f32>>, MemoryError> {
+        let hash = content_hash.to_string();
+        self.conn
+            .call(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT vector FROM embedding_cache WHERE content_hash = ?",
+                )?;
+                let result = stmt
+                    .query_row(rusqlite::params![hash], |row| {
+                        let blob: Vec<u8> = row.get(0)?;
+                        Ok(blob_to_f32_vec(&blob))
+                    })
+                    .ok();
+                Ok(result)
+            })
+            .await
+            .map_err(|e| MemoryError::StorageError(format!("Failed to query embedding cache: {}", e)))
+    }
+
+    /// Cache an embedding.
+    pub async fn cache_embedding(
+        &self,
+        content_hash: &str,
+        provider: &str,
+        model: &str,
+        vector: &[f32],
+    ) -> Result<(), MemoryError> {
+        let hash = content_hash.to_string();
+        let provider = provider.to_string();
+        let model = model.to_string();
+        let blob = f32_vec_to_blob(vector);
+        let now = Utc::now().to_rfc3339();
+
+        self.conn
+            .call(move |conn| {
+                conn.execute(
+                    r#"INSERT OR REPLACE INTO embedding_cache (content_hash, provider, model, vector, created_at)
+                       VALUES (?, ?, ?, ?, ?)"#,
+                    rusqlite::params![hash, provider, model, blob, now],
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(|e| MemoryError::StorageError(format!("Failed to cache embedding: {}", e)))
+    }
+}
+
+/// Convert f32 slice to byte blob for SQLite storage.
+fn f32_vec_to_blob(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+/// Convert byte blob back to f32 vector.
+fn blob_to_f32_vec(blob: &[u8]) -> Vec<f32> {
+    blob.chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect()
 }
 
 /// Escape special FTS5 query characters.

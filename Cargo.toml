@@ -29,9 +29,20 @@ autohands-skills-dynamic = { path = "crates/extensions/skills-dynamic" }
 autohands-tools-skill = { path = "crates/extensions/tools-skill" }
 autohands-protocols = { workspace = true }
 autohands-provider-anthropic = { path = "crates/extensions/provider-anthropic" }
+autohands-provider-openai = { path = "crates/extensions/provider-openai" }
+autohands-provider-gemini = { path = "crates/extensions/provider-gemini" }
+autohands-checkpoint = { workspace = true }
+autohands-monitor = { workspace = true }
+autohands-memory-sqlite = { path = "crates/extensions/memory-sqlite" }
+autohands-tools-cron = { path = "crates/extensions/tools-cron" }
+autohands-tools-notify = { path = "crates/extensions/tools-notify" }
+autohands-tools-image = { path = "crates/extensions/tools-image" }
+autohands-tools-memory = { path = "crates/extensions/tools-memory" }
 serde_json = { workspace = true }
 autohands-provider-ark = { path = "crates/extensions/provider-ark" }
 autohands-channel-web = { path = "crates/extensions/channel-web" }
+async-trait = { workspace = true }
+axum = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
@@ -81,6 +92,7 @@ members = [
     "crates/extensions/memory-hybrid",
     "crates/extensions/tools-image",
     "crates/extensions/tools-skill",
+    "crates/extensions/tools-memory",
     "crates/extensions/channel-web",
 ]
 

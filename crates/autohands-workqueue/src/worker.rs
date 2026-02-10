@@ -214,15 +214,6 @@ mod tests {
         }
     }
 
-    struct FailingHandler;
-
-    #[async_trait]
-    impl TaskHandler for FailingHandler {
-        async fn handle(&self, _task: &Task) -> Result<(), QueueError> {
-            Err(QueueError::ExecutionFailed("test failure".to_string()))
-        }
-    }
-
     #[test]
     fn test_worker_new() {
         let worker = Worker::new(1);

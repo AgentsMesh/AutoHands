@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use axum::{http::StatusCode, response::IntoResponse};
-use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 /// Metric type.

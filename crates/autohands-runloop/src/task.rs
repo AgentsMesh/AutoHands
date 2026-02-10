@@ -1,20 +1,16 @@
-//! RunLoop task definitions and task queue.
+//! RunLoop task definitions.
+
+#[cfg(test)]
+#[path = "task_tests.rs"]
+mod tests;
 
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap};
-use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
-use std::sync::Arc;
+use std::collections::HashMap;
 
 use autohands_protocols::channel::ReplyAddress;
 use chrono::{DateTime, Utc};
-use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
-use tracing::{debug, warn};
 use uuid::Uuid;
-
-use crate::config::TaskQueueConfig;
-use crate::error::{RunLoopError, RunLoopResult, TaskChainError};
 
 /// Task priority levels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -72,44 +68,30 @@ impl Default for TaskSource {
 pub struct Task {
     /// Unique task ID.
     pub id: Uuid,
-
     /// Task type (e.g., "agent:execute", "scheduler:job:due").
     pub task_type: String,
-
     /// Task payload.
     pub payload: serde_json::Value,
-
     /// Task priority.
     pub priority: TaskPriority,
-
     /// Task source.
     pub source: TaskSource,
-
     /// Creation timestamp.
     pub created_at: DateTime<Utc>,
-
     /// Scheduled execution time.
     /// None = immediate execution, Some = delayed execution.
     pub scheduled_at: Option<DateTime<Utc>>,
-
     /// Correlation ID for task chains.
     pub correlation_id: Option<String>,
-
     /// Parent task ID (for tracing).
     pub parent_id: Option<Uuid>,
-
     /// Task metadata.
     pub metadata: HashMap<String, serde_json::Value>,
-
     /// Retry count.
     pub retry_count: u32,
-
     /// Maximum retries.
     pub max_retries: u32,
-
     /// Reply address for routing responses back to the source channel.
-    /// Enables the "reply to origin" pattern - messages are routed back
-    /// to where they came from.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<ReplyAddress>,
 }
@@ -177,9 +159,6 @@ impl Task {
     }
 
     /// Set reply address for routing responses back to the source channel.
-    ///
-    /// This enables the "reply to origin" pattern where responses are automatically
-    /// routed back to the channel and target that originated the request.
     pub fn with_reply_to(mut self, reply_to: ReplyAddress) -> Self {
         self.reply_to = Some(reply_to);
         self
@@ -242,9 +221,9 @@ impl Ord for PriorityTask {
 
 /// Delayed task entry.
 #[derive(Clone)]
-struct DelayedTask {
-    task: Task,
-    scheduled_at: DateTime<Utc>,
+pub(crate) struct DelayedTask {
+    pub task: Task,
+    pub scheduled_at: DateTime<Utc>,
 }
 
 impl PartialEq for DelayedTask {
@@ -265,411 +244,5 @@ impl Ord for DelayedTask {
     fn cmp(&self, other: &Self) -> Ordering {
         // Earlier scheduled time has higher priority (reverse for min-heap)
         other.scheduled_at.cmp(&self.scheduled_at)
-    }
-}
-
-/// Task queue with priority and delayed task support.
-pub struct TaskQueue {
-    /// Configuration.
-    config: TaskQueueConfig,
-
-    /// Immediate execution queue (priority sorted).
-    immediate: RwLock<BinaryHeap<PriorityTask>>,
-
-    /// Delayed tasks queue (by scheduled time).
-    delayed: RwLock<BinaryHeap<DelayedTask>>,
-
-    /// Task chain tracker.
-    chain_tracker: Arc<TaskChainTracker>,
-}
-
-impl TaskQueue {
-    /// Create a new task queue.
-    pub fn new(config: TaskQueueConfig, max_tasks_per_chain: u32) -> Self {
-        Self {
-            config,
-            immediate: RwLock::new(BinaryHeap::new()),
-            delayed: RwLock::new(BinaryHeap::new()),
-            chain_tracker: Arc::new(TaskChainTracker::new(max_tasks_per_chain)),
-        }
-    }
-
-    /// Enqueue a task.
-    pub async fn enqueue(&self, task: Task) -> RunLoopResult<()> {
-        // Check chain limit if correlation ID exists
-        if let Some(ref correlation_id) = task.correlation_id {
-            self.chain_tracker.try_produce(correlation_id)?;
-        }
-
-        // Check queue size limit
-        let immediate_len = self.immediate.read().await.len();
-        let delayed_len = self.delayed.read().await.len();
-        if immediate_len + delayed_len >= self.config.max_pending_tasks {
-            return Err(RunLoopError::TaskProcessingError(
-                "Task queue is full".to_string(),
-            ));
-        }
-
-        // Route to appropriate queue
-        if let Some(scheduled_at) = task.scheduled_at {
-            if scheduled_at > Utc::now() {
-                debug!(
-                    "Task {} scheduled for {}",
-                    task.id,
-                    scheduled_at.to_rfc3339()
-                );
-                let mut delayed = self.delayed.write().await;
-                delayed.push(DelayedTask {
-                    task,
-                    scheduled_at,
-                });
-                return Ok(());
-            }
-        }
-
-        debug!(
-            "Task {} enqueued (priority: {:?})",
-            task.id, task.priority
-        );
-        let mut immediate = self.immediate.write().await;
-        immediate.push(PriorityTask(task));
-
-        Ok(())
-    }
-
-    /// Dequeue the highest priority ready task.
-    pub async fn dequeue(&self) -> Option<Task> {
-        let mut immediate = self.immediate.write().await;
-        immediate.pop().map(|pt| {
-            debug!("Task {} dequeued", pt.0.id);
-            pt.0
-        })
-    }
-
-    /// Promote delayed tasks that are now due.
-    pub async fn promote_delayed(&self) {
-        let now = Utc::now();
-        let mut delayed = self.delayed.write().await;
-        let mut immediate = self.immediate.write().await;
-
-        while let Some(entry) = delayed.peek() {
-            if entry.scheduled_at <= now {
-                let entry = delayed.pop().unwrap();
-                debug!(
-                    "Promoting delayed task {} (scheduled: {})",
-                    entry.task.id,
-                    entry.scheduled_at.to_rfc3339()
-                );
-                immediate.push(PriorityTask(entry.task));
-            } else {
-                break;
-            }
-        }
-    }
-
-    /// Get the next delayed task's scheduled time.
-    pub async fn next_delayed_time(&self) -> Option<DateTime<Utc>> {
-        self.delayed.read().await.peek().map(|e| e.scheduled_at)
-    }
-
-    /// Get immediate queue length.
-    pub async fn immediate_len(&self) -> usize {
-        self.immediate.read().await.len()
-    }
-
-    /// Get delayed queue length.
-    pub async fn delayed_len(&self) -> usize {
-        self.delayed.read().await.len()
-    }
-
-    /// Get total queue length.
-    pub async fn len(&self) -> usize {
-        self.immediate_len().await + self.delayed_len().await
-    }
-
-    /// Check if queues are empty.
-    pub async fn is_empty(&self) -> bool {
-        self.immediate.read().await.is_empty() && self.delayed.read().await.is_empty()
-    }
-
-    /// Get the chain tracker.
-    pub fn chain_tracker(&self) -> &Arc<TaskChainTracker> {
-        &self.chain_tracker
-    }
-
-    /// Clear all tasks.
-    pub async fn clear(&self) {
-        self.immediate.write().await.clear();
-        self.delayed.write().await.clear();
-    }
-}
-
-/// Task chain tracker.
-///
-/// Tracks task chains by correlation ID and enforces limits.
-pub struct TaskChainTracker {
-    /// correlation_id -> task count
-    chains: DashMap<String, AtomicU32>,
-
-    /// Maximum tasks per chain.
-    max_tasks_per_chain: u32,
-}
-
-impl TaskChainTracker {
-    /// Create a new chain tracker.
-    pub fn new(max_tasks_per_chain: u32) -> Self {
-        Self {
-            chains: DashMap::new(),
-            max_tasks_per_chain,
-        }
-    }
-
-    /// Try to produce a new task in a chain.
-    pub fn try_produce(&self, correlation_id: &str) -> RunLoopResult<()> {
-        let count = self
-            .chains
-            .entry(correlation_id.to_string())
-            .or_insert(AtomicU32::new(0));
-
-        let current = count.fetch_add(1, AtomicOrdering::SeqCst);
-
-        if current >= self.max_tasks_per_chain {
-            warn!(
-                "Task chain {} exceeded limit ({})",
-                correlation_id, current
-            );
-            return Err(RunLoopError::TaskProcessingError(
-                TaskChainError::LimitExceeded {
-                    correlation_id: correlation_id.to_string(),
-                    count: current,
-                    limit: self.max_tasks_per_chain,
-                }
-                .to_string(),
-            ));
-        }
-
-        Ok(())
-    }
-
-    /// Get the current count for a chain.
-    pub fn get_count(&self, correlation_id: &str) -> u32 {
-        self.chains
-            .get(correlation_id)
-            .map(|c| c.load(AtomicOrdering::SeqCst))
-            .unwrap_or(0)
-    }
-
-    /// Clean up old chains (call periodically).
-    pub fn cleanup(&self) {
-        // Remove chains with 0 count (already completed)
-        self.chains.retain(|_, count| count.load(AtomicOrdering::SeqCst) > 0);
-    }
-
-    /// Reset a chain (call when chain completes).
-    pub fn reset_chain(&self, correlation_id: &str) {
-        self.chains.remove(correlation_id);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_task_new() {
-        let task = Task::new("test:task", serde_json::json!({"key": "value"}));
-        assert_eq!(task.task_type, "test:task");
-        assert_eq!(task.priority, TaskPriority::Normal);
-        assert!(task.is_ready());
-    }
-
-    #[test]
-    fn test_task_builder() {
-        let task = Task::new("test", serde_json::Value::Null)
-            .with_priority(TaskPriority::High)
-            .with_source(TaskSource::Agent)
-            .with_correlation_id("chain-1")
-            .with_max_retries(5);
-
-        assert_eq!(task.priority, TaskPriority::High);
-        assert_eq!(task.source, TaskSource::Agent);
-        assert_eq!(task.correlation_id, Some("chain-1".to_string()));
-        assert_eq!(task.max_retries, 5);
-    }
-
-    #[test]
-    fn test_task_delayed() {
-        let future = Utc::now() + chrono::Duration::hours(1);
-        let task = Task::new("test", serde_json::Value::Null).with_scheduled_at(future);
-
-        assert!(!task.is_ready());
-    }
-
-    #[test]
-    fn test_priority_ordering() {
-        assert!(TaskPriority::System > TaskPriority::Critical);
-        assert!(TaskPriority::Critical > TaskPriority::High);
-        assert!(TaskPriority::High > TaskPriority::Normal);
-        assert!(TaskPriority::Normal > TaskPriority::Low);
-    }
-
-    #[tokio::test]
-    async fn test_task_queue_basic() {
-        let config = TaskQueueConfig::default();
-        let queue = TaskQueue::new(config, 100);
-
-        let task = Task::new("test", serde_json::Value::Null);
-        queue.enqueue(task.clone()).await.unwrap();
-
-        assert_eq!(queue.len().await, 1);
-
-        let dequeued = queue.dequeue().await;
-        assert!(dequeued.is_some());
-        assert_eq!(dequeued.unwrap().task_type, "test");
-        assert_eq!(queue.len().await, 0);
-    }
-
-    #[tokio::test]
-    async fn test_task_queue_priority() {
-        let config = TaskQueueConfig::default();
-        let queue = TaskQueue::new(config, 100);
-
-        let low = Task::new("low", serde_json::Value::Null).with_priority(TaskPriority::Low);
-        let high =
-            Task::new("high", serde_json::Value::Null).with_priority(TaskPriority::High);
-        let normal = Task::new("normal", serde_json::Value::Null);
-
-        queue.enqueue(low).await.unwrap();
-        queue.enqueue(normal).await.unwrap();
-        queue.enqueue(high).await.unwrap();
-
-        assert_eq!(queue.dequeue().await.unwrap().task_type, "high");
-        assert_eq!(queue.dequeue().await.unwrap().task_type, "normal");
-        assert_eq!(queue.dequeue().await.unwrap().task_type, "low");
-    }
-
-    #[tokio::test]
-    async fn test_task_queue_delayed() {
-        let config = TaskQueueConfig::default();
-        let queue = TaskQueue::new(config, 100);
-
-        let future = Utc::now() + chrono::Duration::hours(1);
-        let task =
-            Task::new("delayed", serde_json::Value::Null).with_scheduled_at(future);
-
-        queue.enqueue(task).await.unwrap();
-
-        // Should be in delayed queue
-        assert_eq!(queue.immediate_len().await, 0);
-        assert_eq!(queue.delayed_len().await, 1);
-
-        // Should not be dequeued
-        assert!(queue.dequeue().await.is_none());
-    }
-
-    #[test]
-    fn test_chain_tracker() {
-        let tracker = TaskChainTracker::new(3);
-
-        // First 3 should succeed
-        assert!(tracker.try_produce("chain-1").is_ok());
-        assert!(tracker.try_produce("chain-1").is_ok());
-        assert!(tracker.try_produce("chain-1").is_ok());
-
-        // 4th should fail
-        assert!(tracker.try_produce("chain-1").is_err());
-
-        // Different chain should work
-        assert!(tracker.try_produce("chain-2").is_ok());
-    }
-
-    #[test]
-    fn test_chain_tracker_reset() {
-        let tracker = TaskChainTracker::new(2);
-
-        tracker.try_produce("chain-1").unwrap();
-        tracker.try_produce("chain-1").unwrap();
-        assert!(tracker.try_produce("chain-1").is_err());
-
-        tracker.reset_chain("chain-1");
-        assert!(tracker.try_produce("chain-1").is_ok());
-    }
-
-    #[test]
-    fn test_task_retry() {
-        let mut task = Task::new("test", serde_json::Value::Null).with_max_retries(2);
-
-        assert!(task.can_retry());
-        task.increment_retry();
-        assert!(task.can_retry());
-        task.increment_retry();
-        assert!(!task.can_retry());
-    }
-
-    #[test]
-    fn test_ensure_correlation_id() {
-        let mut task = Task::new("test", serde_json::Value::Null);
-        assert!(task.correlation_id.is_none());
-
-        let id1 = task.ensure_correlation_id();
-        let id2 = task.ensure_correlation_id();
-        assert_eq!(id1, id2);
-    }
-
-    #[test]
-    fn test_task_with_reply_to() {
-        let reply_to = ReplyAddress::new("web", "conn-123");
-        let task = Task::new("agent:execute", serde_json::json!({"prompt": "hello"}))
-            .with_reply_to(reply_to.clone());
-
-        assert!(task.reply_to.is_some());
-        let task_reply_to = task.reply_to.unwrap();
-        assert_eq!(task_reply_to.channel_id, "web");
-        assert_eq!(task_reply_to.target, "conn-123");
-    }
-
-    #[test]
-    fn test_task_reply_to_serialization() {
-        let reply_to = ReplyAddress::with_thread("telegram", "chat-456", "thread-789");
-        let task = Task::new("test", serde_json::Value::Null).with_reply_to(reply_to);
-
-        let json = serde_json::to_string(&task).unwrap();
-        assert!(json.contains("telegram"));
-        assert!(json.contains("chat-456"));
-        assert!(json.contains("thread-789"));
-    }
-
-    #[test]
-    fn test_task_without_reply_to_serialization() {
-        let task = Task::new("test", serde_json::Value::Null);
-
-        let json = serde_json::to_string(&task).unwrap();
-        // reply_to should be skipped when None
-        assert!(!json.contains("reply_to"));
-    }
-
-    #[test]
-    fn test_task_reply_to_deserialization() {
-        let json = r#"{
-            "id": "00000000-0000-0000-0000-000000000000",
-            "task_type": "test",
-            "payload": null,
-            "priority": "Normal",
-            "source": "User",
-            "created_at": "2024-01-01T00:00:00Z",
-            "metadata": {},
-            "retry_count": 0,
-            "max_retries": 3,
-            "reply_to": {
-                "channel_id": "web",
-                "target": "conn-123"
-            }
-        }"#;
-
-        let task: Task = serde_json::from_str(json).unwrap();
-        assert!(task.reply_to.is_some());
-        let reply_to = task.reply_to.unwrap();
-        assert_eq!(reply_to.channel_id, "web");
-        assert_eq!(reply_to.target, "conn-123");
     }
 }

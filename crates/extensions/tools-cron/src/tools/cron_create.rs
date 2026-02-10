@@ -17,15 +17,9 @@ struct CronCreateParams {
     schedule: String,
     /// Command or prompt to execute when the task runs.
     command: String,
-    /// Optional description of what this task does.
-    #[serde(default)]
-    description: Option<String>,
     /// Whether the task is enabled (default: true).
     #[serde(default = "default_enabled")]
     enabled: bool,
-    /// Optional timezone (default: system timezone).
-    #[serde(default)]
-    timezone: Option<String>,
 }
 
 fn default_enabled() -> bool {

@@ -152,6 +152,88 @@ impl EmbeddingProvider for OpenAIEmbedding {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Cached embedding provider wrapper
+// ---------------------------------------------------------------------------
+
+use std::sync::Arc;
+
+use crate::fts::FTSBackend;
+
+/// Wraps an `EmbeddingProvider` with SQLite-backed caching to avoid
+/// redundant API calls for content that has already been embedded.
+pub struct CachedEmbeddingProvider {
+    inner: Arc<dyn EmbeddingProvider>,
+    fts: Arc<FTSBackend>,
+    provider_name: String,
+    model_name: String,
+}
+
+impl CachedEmbeddingProvider {
+    /// Create a new cached embedding provider.
+    pub fn new(
+        inner: Arc<dyn EmbeddingProvider>,
+        fts: Arc<FTSBackend>,
+        provider_name: impl Into<String>,
+        model_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            inner,
+            fts,
+            provider_name: provider_name.into(),
+            model_name: model_name.into(),
+        }
+    }
+
+    /// Compute a simple content hash for cache lookup.
+    fn content_hash(text: &str) -> String {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut hasher);
+        format!("{:x}", hasher.finish())
+    }
+}
+
+#[async_trait]
+impl EmbeddingProvider for CachedEmbeddingProvider {
+    async fn embed(&self, text: &str) -> Result<Embedding, EmbeddingError> {
+        let hash = Self::content_hash(text);
+
+        // Check cache
+        if let Ok(Some(cached)) = self.fts.get_cached_embedding(&hash).await {
+            debug!("Embedding cache hit for hash={}", hash);
+            return Ok(Embedding::new(cached));
+        }
+
+        // Cache miss — call inner provider
+        let embedding = self.inner.embed(text).await?;
+
+        // Store in cache (non-fatal on failure)
+        if let Err(e) = self
+            .fts
+            .cache_embedding(&hash, &self.provider_name, &self.model_name, &embedding.vector)
+            .await
+        {
+            debug!("Failed to cache embedding: {}", e);
+        }
+
+        Ok(embedding)
+    }
+
+    async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Embedding>, EmbeddingError> {
+        // For batch, delegate individual calls through embed() to use cache
+        let mut results = Vec::with_capacity(texts.len());
+        for text in texts {
+            results.push(self.embed(text).await?);
+        }
+        Ok(results)
+    }
+
+    fn dimension(&self) -> usize {
+        self.inner.dimension()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

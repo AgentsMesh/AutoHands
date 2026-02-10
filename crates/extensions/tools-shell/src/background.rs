@@ -307,7 +307,7 @@ mod tests {
         let id = manager.spawn("sleep 60", None).unwrap();
 
         // Should have one running
-        assert!(manager.running_count() >= 0); // Process may have started
+        let _ = manager.running_count(); // Process may have started
 
         // Kill it
         let _ = manager.kill(&id);

@@ -8,7 +8,6 @@ use dashmap::DashMap;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use autohands_protocols::tool::AbortSignal;
@@ -88,7 +87,6 @@ pub struct SpawnedAgent {
 struct RunningAgent {
     info: SpawnedAgent,
     abort_signal: Arc<AbortSignal>,
-    result_sender: mpsc::Sender<AgentResult>,
 }
 
 /// Result from an agent execution.
@@ -184,8 +182,6 @@ impl AgentManager {
             metadata,
         };
 
-        // Create communication channels
-        let (result_tx, mut result_rx) = mpsc::channel::<AgentResult>(1);
         let abort_signal = Arc::new(AbortSignal::new());
 
         // Store running agent
@@ -194,7 +190,6 @@ impl AgentManager {
             RunningAgent {
                 info: info.clone(),
                 abort_signal: abort_signal.clone(),
-                result_sender: result_tx,
             },
         );
 
@@ -255,20 +250,6 @@ impl AgentManager {
             manager_results.insert(spawn_id_clone.clone(), agent_result);
 
             info!("Sub-agent {} completed (success={})", spawn_id_clone, success);
-        });
-
-        // Start result listener
-        let spawn_id_for_listener = spawn_id.clone();
-        let agents_for_listener = self.agents.clone();
-        tokio::spawn(async move {
-            while let Some(result) = result_rx.recv().await {
-                debug!("Received result for agent {}: {:?}", spawn_id_for_listener, result);
-                if let Some(mut agent) = agents_for_listener.get_mut(&spawn_id_for_listener) {
-                    if let Some(last) = result.messages.last() {
-                        agent.info.last_message = Some(last.content.text());
-                    }
-                }
-            }
         });
 
         info!("Spawned sub-agent {} from {}", spawn_id, agent_id);

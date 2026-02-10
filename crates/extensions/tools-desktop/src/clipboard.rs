@@ -17,21 +17,6 @@ pub enum ClipboardError {
     NoImage,
 }
 
-/// Trait for clipboard operations (allows mocking in tests).
-#[allow(dead_code)]
-pub trait ClipboardBackend {
-    /// Get text from clipboard.
-    fn get_text(&mut self) -> Result<String, ClipboardError>;
-    /// Set text to clipboard.
-    fn set_text(&mut self, text: &str) -> Result<(), ClipboardError>;
-    /// Get image from clipboard.
-    fn get_image(&mut self) -> Result<Vec<u8>, ClipboardError>;
-    /// Set image to clipboard.
-    fn set_image(&mut self, png_data: &[u8]) -> Result<(), ClipboardError>;
-    /// Clear clipboard.
-    fn clear(&mut self) -> Result<(), ClipboardError>;
-}
-
 /// Clipboard controller.
 pub struct ClipboardController {
     clipboard: Clipboard,
@@ -106,31 +91,40 @@ impl ClipboardController {
     }
 }
 
-impl ClipboardBackend for ClipboardController {
-    fn get_text(&mut self) -> Result<String, ClipboardError> {
-        ClipboardController::get_text(self)
-    }
-
-    fn set_text(&mut self, text: &str) -> Result<(), ClipboardError> {
-        ClipboardController::set_text(self, text)
-    }
-
-    fn get_image(&mut self) -> Result<Vec<u8>, ClipboardError> {
-        ClipboardController::get_image(self)
-    }
-
-    fn set_image(&mut self, png_data: &[u8]) -> Result<(), ClipboardError> {
-        ClipboardController::set_image(self, png_data)
-    }
-
-    fn clear(&mut self) -> Result<(), ClipboardError> {
-        ClipboardController::clear(self)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Trait for clipboard operations (allows mocking in tests).
+    trait ClipboardBackend {
+        fn get_text(&mut self) -> Result<String, ClipboardError>;
+        fn set_text(&mut self, text: &str) -> Result<(), ClipboardError>;
+        fn get_image(&mut self) -> Result<Vec<u8>, ClipboardError>;
+        fn set_image(&mut self, png_data: &[u8]) -> Result<(), ClipboardError>;
+        fn clear(&mut self) -> Result<(), ClipboardError>;
+    }
+
+    impl ClipboardBackend for ClipboardController {
+        fn get_text(&mut self) -> Result<String, ClipboardError> {
+            ClipboardController::get_text(self)
+        }
+
+        fn set_text(&mut self, text: &str) -> Result<(), ClipboardError> {
+            ClipboardController::set_text(self, text)
+        }
+
+        fn get_image(&mut self) -> Result<Vec<u8>, ClipboardError> {
+            ClipboardController::get_image(self)
+        }
+
+        fn set_image(&mut self, png_data: &[u8]) -> Result<(), ClipboardError> {
+            ClipboardController::set_image(self, png_data)
+        }
+
+        fn clear(&mut self) -> Result<(), ClipboardError> {
+            ClipboardController::clear(self)
+        }
+    }
 
     /// Mock clipboard backend for testing.
     struct MockClipboard {

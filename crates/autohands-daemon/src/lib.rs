@@ -46,6 +46,8 @@
 
 pub mod config;
 pub mod daemon;
+pub mod daemon_impl;
+pub mod daemon_status;
 pub mod error;
 pub mod health;
 pub mod pid;
@@ -62,6 +64,7 @@ pub mod systemd;
 // Re-exports
 pub use config::DaemonConfig;
 pub use daemon::{Daemon, DaemonState};
+pub use daemon_status::DaemonStatus;
 pub use error::DaemonError;
 pub use health::HealthChecker;
 pub use pid::PidFile;

@@ -251,7 +251,7 @@ mod tests {
         pid.locked = false; // Simulate not owning the lock
 
         // A new PidFile should be able to acquire it (stale)
-        let mut pid2 = PidFile::new(pid.path());
+        let _pid2 = PidFile::new(pid.path());
         // This test assumes PID 999999 is not running
         // In real tests, we might need to use a mock
     }

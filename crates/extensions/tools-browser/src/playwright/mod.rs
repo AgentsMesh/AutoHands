@@ -34,6 +34,8 @@
 //! - LLM-friendly serialization
 
 mod bridge;
+mod bridge_script;
+mod browser_api;
 mod dom;
 mod error;
 mod manager;

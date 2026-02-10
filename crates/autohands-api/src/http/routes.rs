@@ -77,20 +77,18 @@ pub fn create_router_with_hybrid_state(state: Arc<HybridAppState>) -> Router {
 mod tests {
     use super::*;
     use crate::runloop_bridge::RunLoopState;
-    use autohands_runloop::{TaskQueue, TaskQueueConfig};
+    use crate::state::AppState;
+    use autohands_runloop::{RunLoop, RunLoopConfig};
     use axum::{
         body::Body,
         http::{Request, StatusCode},
     };
-    use tokio::sync::mpsc;
     use tower::ServiceExt;
 
     fn create_test_router() -> Router {
         let base = Arc::new(AppState::default());
-        let (tx, _rx) = mpsc::channel(16);
-        let config = TaskQueueConfig::default();
-        let queue = Arc::new(TaskQueue::new(config, 100));
-        let runloop = Arc::new(RunLoopState::new(tx, queue));
+        let run_loop = Arc::new(RunLoop::new(RunLoopConfig::default()));
+        let runloop = Arc::new(RunLoopState::from_runloop(run_loop));
         let hybrid = Arc::new(HybridAppState::new(base, runloop));
         create_router_with_hybrid_state(hybrid)
     }

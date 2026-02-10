@@ -9,9 +9,13 @@
 pub mod channel_bridge;
 pub mod checkpoint;
 pub mod file_watcher;
+pub mod file_watcher_manager;
+pub mod file_watcher_source;
+mod file_watcher_trigger;
 pub mod health;
 pub mod runtime;
 pub mod scheduler;
 pub mod signal;
+pub mod trigger_types;
 pub mod webhook;
 pub mod websocket;

@@ -7,43 +7,14 @@ use tracing::{debug, info, warn};
 use autohands_core::registry::{ProviderRegistry, ToolRegistry};
 use autohands_protocols::agent::{Agent, AgentContext};
 use autohands_protocols::error::AgentError;
+use autohands_protocols::memory::{MemoryBackend, MemoryQuery};
 use autohands_protocols::tool::ToolContext;
 use autohands_protocols::types::Message;
 
+use crate::checkpoint::CheckpointSupport;
+use crate::memory_persistence;
+use crate::summarizer::HistoryCompressor;
 use crate::transcript::TranscriptWriter;
-
-/// Checkpoint support trait (optional integration).
-#[async_trait::async_trait]
-pub trait CheckpointSupport: Send + Sync {
-    /// Check if a checkpoint should be created at this turn.
-    fn should_checkpoint(&self, turn: u32) -> bool;
-
-    /// Create a checkpoint with the current state.
-    async fn create_checkpoint(
-        &self,
-        session_id: &str,
-        turn: u32,
-        messages: &[Message],
-        context: &serde_json::Value,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
-
-    /// Get the latest checkpoint for recovery.
-    async fn get_latest_checkpoint(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<CheckpointData>, Box<dyn std::error::Error + Send + Sync>>;
-}
-
-/// Checkpoint data for recovery.
-#[derive(Debug, Clone)]
-pub struct CheckpointData {
-    /// Turn number when checkpoint was created.
-    pub turn: u32,
-    /// Serialized messages.
-    pub messages: Vec<Message>,
-    /// Serialized context.
-    pub context: serde_json::Value,
-}
 
 /// Configuration for the agent loop.
 #[derive(Debug, Clone)]
@@ -52,6 +23,8 @@ pub struct AgentLoopConfig {
     pub timeout_seconds: u64,
     /// Enable checkpoint support.
     pub checkpoint_enabled: bool,
+    /// 工具输出最大字符数，超出则截断并附加提示。0 表示不限制。
+    pub max_tool_output_chars: usize,
 }
 
 impl Default for AgentLoopConfig {
@@ -60,6 +33,7 @@ impl Default for AgentLoopConfig {
             max_turns: 50,
             timeout_seconds: 300,
             checkpoint_enabled: false,
+            max_tool_output_chars: 100_000, // ~25K tokens
         }
     }
 }
@@ -74,26 +48,27 @@ impl AgentLoopConfig {
 
 /// The agentic loop executor.
 pub struct AgentLoop {
-    #[allow(dead_code)]
-    provider_registry: Arc<ProviderRegistry>,
     tool_registry: Arc<ToolRegistry>,
     config: AgentLoopConfig,
     checkpoint: Option<Arc<dyn CheckpointSupport>>,
     transcript: Option<Arc<TranscriptWriter>>,
+    compressor: Option<Arc<HistoryCompressor>>,
+    memory_backend: Option<Arc<dyn MemoryBackend>>,
 }
 
 impl AgentLoop {
     pub fn new(
-        provider_registry: Arc<ProviderRegistry>,
+        _provider_registry: Arc<ProviderRegistry>,
         tool_registry: Arc<ToolRegistry>,
         config: AgentLoopConfig,
     ) -> Self {
         Self {
-            provider_registry,
             tool_registry,
             config,
             checkpoint: None,
             transcript: None,
+            compressor: None,
+            memory_backend: None,
         }
     }
 
@@ -106,6 +81,18 @@ impl AgentLoop {
     /// Set transcript writer for session recording.
     pub fn with_transcript(mut self, transcript: Option<Arc<TranscriptWriter>>) -> Self {
         self.transcript = transcript;
+        self
+    }
+
+    /// Set history compressor for context length recovery.
+    pub fn with_compressor(mut self, compressor: Arc<HistoryCompressor>) -> Self {
+        self.compressor = Some(compressor);
+        self
+    }
+
+    /// Set memory backend for context injection and flush.
+    pub fn with_memory(mut self, backend: Arc<dyn MemoryBackend>) -> Self {
+        self.memory_backend = Some(backend);
         self
     }
 
@@ -123,6 +110,33 @@ impl AgentLoop {
     ) -> Result<Vec<Message>, AgentError> {
         let start_time = std::time::Instant::now();
         let mut messages = ctx.history.clone();
+
+        // Memory context injection: search for memories related to the initial message
+        if let Some(ref memory) = self.memory_backend {
+            let query = MemoryQuery {
+                text: Some(initial_message.content.text()),
+                limit: 5,
+                min_relevance: Some(0.3),
+                ..Default::default()
+            };
+            match memory.search(query).await {
+                Ok(results) if !results.is_empty() => {
+                    let memory_ctx = memory_persistence::format_memory_context(&results);
+                    messages.push(Message::system(&memory_ctx));
+                    debug!(
+                        "Injected {} relevant memories into context",
+                        results.len()
+                    );
+                }
+                Ok(_) => {
+                    debug!("No relevant memories found for context injection");
+                }
+                Err(e) => {
+                    warn!("Memory search for context injection failed: {}", e);
+                }
+            }
+        }
+
         messages.push(initial_message.clone());
 
         // Record initial user message to transcript
@@ -134,6 +148,7 @@ impl AgentLoop {
         }
 
         let mut turn = 0;
+        let mut total_usage = autohands_protocols::types::Usage::default();
 
         loop {
             if ctx.abort_signal.is_aborted() {
@@ -142,6 +157,10 @@ impl AgentLoop {
             }
 
             if turn >= self.config.max_turns {
+                // Flush memory before returning error -- capture valuable info from the session
+                if let Some(ref memory) = self.memory_backend {
+                    memory_persistence::flush_memories_to_backend(&messages, memory, "session-end-flush").await;
+                }
                 self.record_session_end("max_turns", Some("Max turns exceeded"), turn, &start_time).await;
                 return Err(AgentError::MaxTurnsExceeded(turn));
             }
@@ -149,11 +168,28 @@ impl AgentLoop {
             turn += 1;
             debug!("Agent loop turn {}", turn);
 
-            // Process through agent
+            // Process through agent (with context length recovery)
             ctx.history = messages.clone();
-            let response = agent
+            let response = match agent
                 .process(messages.last().unwrap().clone(), ctx.clone())
-                .await?;
+                .await
+            {
+                Ok(resp) => resp,
+                Err(AgentError::ProviderError(ref provider_err))
+                    if provider_err.is_context_length_error() =>
+                {
+                    warn!(
+                        "Context length exceeded at turn {}, attempting compression",
+                        turn
+                    );
+                    messages = self.compress_messages(messages).await?;
+                    ctx.history = messages.clone();
+                    agent
+                        .process(messages.last().unwrap().clone(), ctx.clone())
+                        .await?
+                }
+                Err(e) => return Err(e),
+            };
 
             // Record assistant message to transcript
             if let Some(ref transcript) = self.transcript {
@@ -161,6 +197,18 @@ impl AgentLoop {
                 if let Err(e) = transcript.record_assistant_message(content, None).await {
                     warn!("Failed to record assistant message to transcript: {}", e);
                 }
+            }
+
+            // 累积 token 用量
+            if let Some(ref usage) = response.usage {
+                total_usage.prompt_tokens += usage.prompt_tokens;
+                total_usage.completion_tokens += usage.completion_tokens;
+                total_usage.total_tokens += usage.total_tokens;
+                debug!(
+                    "Turn {} usage: prompt={}, completion={}, total={}; cumulative total={}",
+                    turn, usage.prompt_tokens, usage.completion_tokens, usage.total_tokens,
+                    total_usage.total_tokens
+                );
             }
 
             messages.push(response.message.clone());
@@ -186,6 +234,11 @@ impl AgentLoop {
 
             if response.is_complete {
                 info!("Agent completed after {} turns", turn);
+                // Flush memory and store session summary on normal completion
+                if let Some(ref memory) = self.memory_backend {
+                    memory_persistence::flush_memories_to_backend(&messages, memory, "session-end-flush").await;
+                    memory_persistence::store_session_summary(&messages, &ctx.session_id, memory).await;
+                }
                 self.record_session_end("completed", None, turn, &start_time).await;
                 break;
             }
@@ -280,7 +333,11 @@ impl AgentLoop {
         self.run(agent, ctx, initial_message).await
     }
 
-    /// Run from a specific turn with existing messages.
+    /// Run from a specific turn with existing messages (checkpoint recovery).
+    ///
+    /// Fully aligned with `run()`: memory injection, transcript recording,
+    /// context overflow recovery, usage accumulation, session end recording,
+    /// and memory flush/session summary on exit.
     async fn run_from_turn(
         &self,
         agent: &dyn Agent,
@@ -288,25 +345,108 @@ impl AgentLoop {
         mut messages: Vec<Message>,
         start_turn: u32,
     ) -> Result<Vec<Message>, AgentError> {
+        let start_time = std::time::Instant::now();
         let mut turn = start_turn;
+        let mut total_usage = autohands_protocols::types::Usage::default();
+
+        // Memory context injection: use the most recent User message as search query
+        // (checkpoint recovery has no new initial_message)
+        if let Some(ref memory) = self.memory_backend {
+            let latest_user_text = messages
+                .iter()
+                .rev()
+                .find(|m| matches!(m.role, autohands_protocols::types::MessageRole::User))
+                .map(|m| m.content.text());
+
+            if let Some(text) = latest_user_text {
+                if !text.is_empty() {
+                    let query = MemoryQuery {
+                        text: Some(text),
+                        limit: 5,
+                        min_relevance: Some(0.3),
+                        ..Default::default()
+                    };
+                    match memory.search(query).await {
+                        Ok(results) if !results.is_empty() => {
+                            let memory_ctx = memory_persistence::format_memory_context(&results);
+                            // Insert at the beginning so provider sees it before restored messages
+                            messages.insert(0, Message::system(&memory_ctx));
+                            debug!(
+                                "Injected {} relevant memories into resumed context",
+                                results.len()
+                            );
+                        }
+                        Ok(_) => {
+                            debug!("No relevant memories found for resumed context injection");
+                        }
+                        Err(e) => {
+                            warn!("Memory search for resumed context injection failed: {}", e);
+                        }
+                    }
+                }
+            }
+        }
 
         loop {
             if ctx.abort_signal.is_aborted() {
+                self.record_session_end("aborted", Some("User aborted"), turn, &start_time).await;
                 return Err(AgentError::Aborted);
             }
 
             if turn >= self.config.max_turns {
+                // Flush memory before returning error
+                if let Some(ref memory) = self.memory_backend {
+                    memory_persistence::flush_memories_to_backend(&messages, memory, "session-end-flush").await;
+                }
+                self.record_session_end("max_turns", Some("Max turns exceeded"), turn, &start_time).await;
                 return Err(AgentError::MaxTurnsExceeded(turn));
             }
 
             turn += 1;
             debug!("Agent loop turn {} (resumed)", turn);
 
-            // Process through agent
+            // Process through agent (with context length recovery)
             ctx.history = messages.clone();
-            let response = agent
+            let response = match agent
                 .process(messages.last().unwrap().clone(), ctx.clone())
-                .await?;
+                .await
+            {
+                Ok(resp) => resp,
+                Err(AgentError::ProviderError(ref provider_err))
+                    if provider_err.is_context_length_error() =>
+                {
+                    warn!(
+                        "Context length exceeded at turn {} (resumed), attempting compression",
+                        turn
+                    );
+                    messages = self.compress_messages(messages).await?;
+                    ctx.history = messages.clone();
+                    agent
+                        .process(messages.last().unwrap().clone(), ctx.clone())
+                        .await?
+                }
+                Err(e) => return Err(e),
+            };
+
+            // Record assistant message to transcript
+            if let Some(ref transcript) = self.transcript {
+                let content = serde_json::to_value(&response.message.content).unwrap_or_default();
+                if let Err(e) = transcript.record_assistant_message(content, None).await {
+                    warn!("Failed to record assistant message to transcript: {}", e);
+                }
+            }
+
+            // Accumulate token usage
+            if let Some(ref usage) = response.usage {
+                total_usage.prompt_tokens += usage.prompt_tokens;
+                total_usage.completion_tokens += usage.completion_tokens;
+                total_usage.total_tokens += usage.total_tokens;
+                debug!(
+                    "Turn {} (resumed) usage: prompt={}, completion={}, total={}; cumulative total={}",
+                    turn, usage.prompt_tokens, usage.completion_tokens, usage.total_tokens,
+                    total_usage.total_tokens
+                );
+            }
 
             messages.push(response.message.clone());
 
@@ -330,13 +470,48 @@ impl AgentLoop {
             }
 
             if response.is_complete {
-                info!("Agent completed after {} turns", turn);
+                info!("Agent completed after {} turns (resumed from {})", turn, start_turn);
+                // Flush memory and store session summary on normal completion
+                if let Some(ref memory) = self.memory_backend {
+                    memory_persistence::flush_memories_to_backend(&messages, memory, "session-end-flush").await;
+                    memory_persistence::store_session_summary(&messages, &ctx.session_id, memory).await;
+                }
+                self.record_session_end("completed", None, turn, &start_time).await;
                 break;
             }
 
             // Handle tool calls
             for tool_call in &response.tool_calls {
+                // Record tool use to transcript
+                if let Some(ref transcript) = self.transcript {
+                    if let Err(e) = transcript.record_tool_use(
+                        &tool_call.id,
+                        &tool_call.name,
+                        tool_call.arguments.clone(),
+                    ).await {
+                        warn!("Failed to record tool use to transcript: {}", e);
+                    }
+                }
+
+                let tool_start = std::time::Instant::now();
                 let result = self.execute_tool(tool_call, &ctx).await;
+                let duration_ms = tool_start.elapsed().as_millis() as u64;
+
+                // Record tool result to transcript
+                if let Some(ref transcript) = self.transcript {
+                    let is_error = result.starts_with("Error:");
+                    if let Err(e) = transcript.record_tool_result(
+                        &tool_call.id,
+                        &tool_call.name,
+                        !is_error,
+                        Some(&result),
+                        if is_error { Some(&result) } else { None },
+                        Some(duration_ms),
+                    ).await {
+                        warn!("Failed to record tool result to transcript: {}", e);
+                    }
+                }
+
                 let tool_message = Message::tool(&tool_call.id, result);
                 messages.push(tool_message);
             }
@@ -357,449 +532,77 @@ impl AgentLoop {
 
         let tool_ctx = ToolContext::new(&ctx.session_id, std::env::current_dir().unwrap());
 
-        match tool.execute(tool_call.arguments.clone(), tool_ctx).await {
+        let result = match tool.execute(tool_call.arguments.clone(), tool_ctx).await {
             Ok(result) => result.content,
             Err(e) => format!("Tool error: {}", e),
+        };
+
+        self.truncate_output(result)
+    }
+
+    /// 压缩消息历史，用于上下文长度恢复。
+    async fn compress_messages(
+        &self,
+        messages: Vec<Message>,
+    ) -> Result<Vec<Message>, AgentError> {
+        // Memory flush: extract key information before compression
+        if let Some(ref memory) = self.memory_backend {
+            memory_persistence::flush_memories_to_backend(&messages, memory, "auto-flush").await;
         }
+
+        if let Some(ref compressor) = self.compressor {
+            match compressor.compress(messages).await {
+                Ok((compressed, summary)) => {
+                    if let Some(ref s) = summary {
+                        info!(
+                            "History compressed: {} messages summarized",
+                            s.message_count
+                        );
+                    }
+                    Ok(compressed)
+                }
+                Err(e) => {
+                    warn!(
+                        "History compression failed: {}, falling back to truncation",
+                        e
+                    );
+                    Err(AgentError::ExecutionFailed(
+                        "Context too large and compression failed".to_string(),
+                    ))
+                }
+            }
+        } else {
+            // 无压缩器时的简单截断：丢弃前半部分消息
+            warn!("No compressor available, truncating history by half");
+            let len = messages.len();
+            let keep = (len / 2).max(1);
+            Ok(messages.into_iter().skip(len - keep).collect())
+        }
+    }
+
+    /// 截断过大的工具输出，防止撑爆上下文。
+    fn truncate_output(&self, content: String) -> String {
+        let max = self.config.max_tool_output_chars;
+        if max == 0 || content.len() <= max {
+            return content;
+        }
+        warn!(
+            "Tool output truncated: {} chars -> {} chars",
+            content.len(),
+            max
+        );
+        // 确保在 char 边界上截断
+        let boundary = memory_persistence::floor_char_boundary(&content, max);
+        let truncated = &content[..boundary];
+        format!(
+            "{}\n\n[OUTPUT TRUNCATED: original {} chars, showing first {}. Use more specific queries to reduce output size.]",
+            truncated,
+            content.len(),
+            max
+        )
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use async_trait::async_trait;
-    use autohands_protocols::agent::{AgentConfig, AgentResponse};
-    use autohands_protocols::tool::AbortSignal;
-    use std::collections::HashMap;
-    use std::sync::atomic::{AtomicU32, Ordering};
-    use tokio::sync::Mutex;
-
-    struct MockAgent {
-        config: AgentConfig,
-        complete_immediately: bool,
-    }
-
-    impl MockAgent {
-        fn new(complete: bool) -> Self {
-            Self {
-                config: AgentConfig::new("mock-agent", "Mock Agent", "mock-model"),
-                complete_immediately: complete,
-            }
-        }
-    }
-
-    #[async_trait]
-    impl Agent for MockAgent {
-        fn id(&self) -> &str {
-            &self.config.id
-        }
-
-        fn config(&self) -> &AgentConfig {
-            &self.config
-        }
-
-        async fn process(
-            &self,
-            message: Message,
-            _ctx: AgentContext,
-        ) -> Result<AgentResponse, AgentError> {
-            Ok(AgentResponse {
-                message: Message::assistant(&format!("Echo: {}", message.content.text())),
-                is_complete: self.complete_immediately,
-                tool_calls: Vec::new(),
-                metadata: HashMap::new(),
-            })
-        }
-    }
-
-    /// Mock checkpoint support for testing.
-    struct MockCheckpointSupport {
-        interval: u32,
-        checkpoint_count: AtomicU32,
-        checkpoints: Mutex<Vec<(u32, Vec<Message>)>>,
-    }
-
-    impl MockCheckpointSupport {
-        fn new(interval: u32) -> Self {
-            Self {
-                interval,
-                checkpoint_count: AtomicU32::new(0),
-                checkpoints: Mutex::new(Vec::new()),
-            }
-        }
-
-        fn checkpoint_count(&self) -> u32 {
-            self.checkpoint_count.load(Ordering::SeqCst)
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl CheckpointSupport for MockCheckpointSupport {
-        fn should_checkpoint(&self, turn: u32) -> bool {
-            turn > 0 && turn % self.interval == 0
-        }
-
-        async fn create_checkpoint(
-            &self,
-            _session_id: &str,
-            turn: u32,
-            messages: &[Message],
-            _context: &serde_json::Value,
-        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-            self.checkpoint_count.fetch_add(1, Ordering::SeqCst);
-            let mut checkpoints = self.checkpoints.lock().await;
-            checkpoints.push((turn, messages.to_vec()));
-            Ok(())
-        }
-
-        async fn get_latest_checkpoint(
-            &self,
-            _session_id: &str,
-        ) -> Result<Option<CheckpointData>, Box<dyn std::error::Error + Send + Sync>> {
-            let checkpoints = self.checkpoints.lock().await;
-            if let Some((turn, messages)) = checkpoints.last().cloned() {
-                Ok(Some(CheckpointData {
-                    turn,
-                    messages,
-                    context: serde_json::json!({}),
-                }))
-            } else {
-                Ok(None)
-            }
-        }
-    }
-
-    #[test]
-    fn test_agent_loop_config_default() {
-        let config = AgentLoopConfig::default();
-        assert_eq!(config.max_turns, 50);
-        assert_eq!(config.timeout_seconds, 300);
-        assert!(!config.checkpoint_enabled);
-    }
-
-    #[test]
-    fn test_agent_loop_config_custom() {
-        let config = AgentLoopConfig {
-            max_turns: 100,
-            timeout_seconds: 600,
-            checkpoint_enabled: true,
-        };
-        assert_eq!(config.max_turns, 100);
-        assert_eq!(config.timeout_seconds, 600);
-        assert!(config.checkpoint_enabled);
-    }
-
-    #[test]
-    fn test_agent_loop_config_with_checkpoint() {
-        let config = AgentLoopConfig::default().with_checkpoint();
-        assert!(config.checkpoint_enabled);
-    }
-
-    #[test]
-    fn test_agent_loop_config_clone() {
-        let config = AgentLoopConfig::default();
-        let cloned = config.clone();
-        assert_eq!(cloned.max_turns, config.max_turns);
-        assert_eq!(cloned.timeout_seconds, config.timeout_seconds);
-        assert_eq!(cloned.checkpoint_enabled, config.checkpoint_enabled);
-    }
-
-    #[test]
-    fn test_agent_loop_config_debug() {
-        let config = AgentLoopConfig::default();
-        let debug_str = format!("{:?}", config);
-        assert!(debug_str.contains("max_turns"));
-        assert!(debug_str.contains("50"));
-    }
-
-    #[test]
-    fn test_agent_loop_creation() {
-        let provider_registry = Arc::new(ProviderRegistry::new());
-        let tool_registry = Arc::new(ToolRegistry::new());
-        let config = AgentLoopConfig::default();
-
-        let _loop = AgentLoop::new(provider_registry, tool_registry, config);
-    }
-
-    #[test]
-    fn test_agent_loop_with_custom_config() {
-        let provider_registry = Arc::new(ProviderRegistry::new());
-        let tool_registry = Arc::new(ToolRegistry::new());
-        let config = AgentLoopConfig {
-            max_turns: 10,
-            timeout_seconds: 60,
-            checkpoint_enabled: false,
-        };
-
-        let _loop = AgentLoop::new(provider_registry, tool_registry, config);
-    }
-
-    #[test]
-    fn test_agent_loop_config_min_values() {
-        let config = AgentLoopConfig {
-            max_turns: 1,
-            timeout_seconds: 1,
-            checkpoint_enabled: false,
-        };
-        assert_eq!(config.max_turns, 1);
-        assert_eq!(config.timeout_seconds, 1);
-    }
-
-    #[test]
-    fn test_agent_loop_config_max_values() {
-        let config = AgentLoopConfig {
-            max_turns: u32::MAX,
-            timeout_seconds: u64::MAX,
-            checkpoint_enabled: true,
-        };
-        assert_eq!(config.max_turns, u32::MAX);
-        assert_eq!(config.timeout_seconds, u64::MAX);
-    }
-
-    #[test]
-    fn test_agent_loop_config_debug_contains_timeout() {
-        let config = AgentLoopConfig::default();
-        let debug_str = format!("{:?}", config);
-        assert!(debug_str.contains("timeout_seconds"));
-        assert!(debug_str.contains("300"));
-    }
-
-    #[test]
-    fn test_agent_loop_with_empty_registries() {
-        let provider_registry = Arc::new(ProviderRegistry::new());
-        let tool_registry = Arc::new(ToolRegistry::new());
-        let config = AgentLoopConfig::default();
-
-        let agent_loop = AgentLoop::new(provider_registry, tool_registry, config);
-        assert_eq!(agent_loop.config.max_turns, 50);
-    }
-
-    #[tokio::test]
-    async fn test_agent_loop_run_completes_immediately() {
-        let provider_registry = Arc::new(ProviderRegistry::new());
-        let tool_registry = Arc::new(ToolRegistry::new());
-        let config = AgentLoopConfig::default();
-        let agent_loop = AgentLoop::new(provider_registry, tool_registry, config);
-
-        let agent = MockAgent::new(true);
-        let ctx = AgentContext::new("test-session").with_history(Vec::new());
-        let message = Message::user("Hello");
-
-        let result = agent_loop.run(&agent, ctx, message).await;
-        assert!(result.is_ok());
-        let messages = result.unwrap();
-        assert!(messages.len() >= 2); // At least initial message and response
-    }
-
-    #[tokio::test]
-    async fn test_agent_loop_run_aborted() {
-        let provider_registry = Arc::new(ProviderRegistry::new());
-        let tool_registry = Arc::new(ToolRegistry::new());
-        let config = AgentLoopConfig::default();
-        let agent_loop = AgentLoop::new(provider_registry, tool_registry, config);
-
-        let agent = MockAgent::new(false); // Won't complete, will be aborted
-
-        let abort_signal = Arc::new(AbortSignal::new());
-        abort_signal.abort(); // Abort immediately
-
-        let ctx = AgentContext {
-            session_id: "test-session".to_string(),
-            history: Vec::new(),
-            abort_signal,
-            data: HashMap::new(),
-        };
-        let message = Message::user("Hello");
-
-        let result = agent_loop.run(&agent, ctx, message).await;
-        assert!(matches!(result, Err(AgentError::Aborted)));
-    }
-
-    #[tokio::test]
-    async fn test_agent_loop_run_max_turns_exceeded() {
-        let provider_registry = Arc::new(ProviderRegistry::new());
-        let tool_registry = Arc::new(ToolRegistry::new());
-        let config = AgentLoopConfig {
-            max_turns: 1,
-            timeout_seconds: 60,
-            checkpoint_enabled: false,
-        };
-        let agent_loop = AgentLoop::new(provider_registry, tool_registry, config);
-
-        let agent = MockAgent::new(false); // Won't complete
-        let ctx = AgentContext::new("test-session").with_history(Vec::new());
-        let message = Message::user("Hello");
-
-        let result = agent_loop.run(&agent, ctx, message).await;
-        assert!(matches!(result, Err(AgentError::MaxTurnsExceeded(_))));
-    }
-
-    #[tokio::test]
-    async fn test_agent_loop_execute_tool_not_found() {
-        let provider_registry = Arc::new(ProviderRegistry::new());
-        let tool_registry = Arc::new(ToolRegistry::new());
-        let config = AgentLoopConfig::default();
-        let agent_loop = AgentLoop::new(provider_registry, tool_registry, config);
-
-        let tool_call = autohands_protocols::types::ToolCall {
-            id: "call_1".to_string(),
-            name: "nonexistent_tool".to_string(),
-            arguments: serde_json::json!({}),
-        };
-        let ctx = AgentContext::new("test-session");
-
-        let result = agent_loop.execute_tool(&tool_call, &ctx).await;
-        assert!(result.contains("Tool not found"));
-    }
-
-    #[test]
-    fn test_checkpoint_data_debug() {
-        let data = CheckpointData {
-            turn: 5,
-            messages: vec![Message::user("test")],
-            context: serde_json::json!({}),
-        };
-        let debug_str = format!("{:?}", data);
-        assert!(debug_str.contains("turn"));
-        assert!(debug_str.contains("5"));
-    }
-
-    #[test]
-    fn test_checkpoint_data_clone() {
-        let data = CheckpointData {
-            turn: 5,
-            messages: vec![Message::user("test")],
-            context: serde_json::json!({"key": "value"}),
-        };
-        let cloned = data.clone();
-        assert_eq!(cloned.turn, data.turn);
-        assert_eq!(cloned.messages.len(), data.messages.len());
-    }
-
-    #[test]
-    fn test_mock_checkpoint_should_checkpoint() {
-        let mock = MockCheckpointSupport::new(5);
-        assert!(!mock.should_checkpoint(0));
-        assert!(!mock.should_checkpoint(3));
-        assert!(mock.should_checkpoint(5));
-        assert!(mock.should_checkpoint(10));
-    }
-
-    #[tokio::test]
-    async fn test_mock_checkpoint_create_and_get() {
-        let mock = MockCheckpointSupport::new(5);
-
-        let messages = vec![Message::user("test")];
-        mock.create_checkpoint("session1", 5, &messages, &serde_json::json!({}))
-            .await
-            .unwrap();
-
-        assert_eq!(mock.checkpoint_count(), 1);
-
-        let latest = mock.get_latest_checkpoint("session1").await.unwrap();
-        assert!(latest.is_some());
-        assert_eq!(latest.unwrap().turn, 5);
-    }
-
-    #[tokio::test]
-    async fn test_mock_checkpoint_no_checkpoint() {
-        let mock = MockCheckpointSupport::new(5);
-        let latest = mock.get_latest_checkpoint("session1").await.unwrap();
-        assert!(latest.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_agent_loop_with_checkpoint_support() {
-        let provider_registry = Arc::new(ProviderRegistry::new());
-        let tool_registry = Arc::new(ToolRegistry::new());
-        let config = AgentLoopConfig::default().with_checkpoint();
-
-        let checkpoint = Arc::new(MockCheckpointSupport::new(1)); // Checkpoint every turn
-
-        let agent_loop = AgentLoop::new(provider_registry, tool_registry, config)
-            .with_checkpoint(checkpoint.clone());
-
-        let agent = MockAgent::new(true);
-        let ctx = AgentContext::new("test-session").with_history(Vec::new());
-        let message = Message::user("Hello");
-
-        let result = agent_loop.run(&agent, ctx, message).await;
-        assert!(result.is_ok());
-
-        // Should have created at least one checkpoint
-        assert!(checkpoint.checkpoint_count() >= 1);
-    }
-
-    #[tokio::test]
-    async fn test_agent_loop_run_with_recovery_no_checkpoint() {
-        let provider_registry = Arc::new(ProviderRegistry::new());
-        let tool_registry = Arc::new(ToolRegistry::new());
-        let config = AgentLoopConfig::default().with_checkpoint();
-
-        let checkpoint = Arc::new(MockCheckpointSupport::new(5));
-
-        let agent_loop = AgentLoop::new(provider_registry, tool_registry, config)
-            .with_checkpoint(checkpoint);
-
-        let agent = MockAgent::new(true);
-        let ctx = AgentContext::new("test-session").with_history(Vec::new());
-        let message = Message::user("Hello");
-
-        // Should run normally since no checkpoint exists
-        let result = agent_loop.run_with_recovery(&agent, ctx, message).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_agent_loop_run_with_recovery_from_checkpoint() {
-        let provider_registry = Arc::new(ProviderRegistry::new());
-        let tool_registry = Arc::new(ToolRegistry::new());
-        let config = AgentLoopConfig::default().with_checkpoint();
-
-        let checkpoint = Arc::new(MockCheckpointSupport::new(1));
-
-        // Pre-populate a checkpoint
-        checkpoint
-            .create_checkpoint(
-                "test-session",
-                3,
-                &[Message::user("recovered"), Message::assistant("test")],
-                &serde_json::json!({}),
-            )
-            .await
-            .unwrap();
-
-        let agent_loop = AgentLoop::new(provider_registry, tool_registry, config)
-            .with_checkpoint(checkpoint);
-
-        let agent = MockAgent::new(true);
-        let ctx = AgentContext::new("test-session").with_history(Vec::new());
-        let message = Message::user("Hello");
-
-        // Should recover from checkpoint
-        let result = agent_loop.run_with_recovery(&agent, ctx, message).await;
-        assert!(result.is_ok());
-
-        let messages = result.unwrap();
-        // Should contain recovered messages plus new ones
-        assert!(messages.len() >= 2);
-    }
-
-    #[tokio::test]
-    async fn test_agent_loop_no_checkpoint_run_with_recovery() {
-        let provider_registry = Arc::new(ProviderRegistry::new());
-        let tool_registry = Arc::new(ToolRegistry::new());
-        let config = AgentLoopConfig::default();
-
-        // No checkpoint support
-        let agent_loop = AgentLoop::new(provider_registry, tool_registry, config);
-
-        let agent = MockAgent::new(true);
-        let ctx = AgentContext::new("test-session").with_history(Vec::new());
-        let message = Message::user("Hello");
-
-        // Should run normally without checkpoint
-        let result = agent_loop.run_with_recovery(&agent, ctx, message).await;
-        assert!(result.is_ok());
-    }
-}
+#[path = "agent_loop_tests.rs"]
+mod tests;

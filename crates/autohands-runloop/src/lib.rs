@@ -68,16 +68,27 @@
 pub mod agent_driver;
 pub mod agent_source;
 pub mod config;
+pub mod correlation;
 pub mod cron_timer;
 pub mod error;
 pub mod task;
+pub mod task_chain;
+pub mod task_queue;
 pub mod integration;
 pub mod metrics;
 pub mod mode;
 pub mod observer;
 pub mod run_loop;
+mod run_loop_accessors;
+mod run_loop_execution;
+mod run_loop_handlers;
+mod run_loop_processing;
+mod run_loop_task_dispatch;
+mod run_loop_traits;
+mod run_loop_wakeup;
 pub mod source;
 pub mod spawner;
+pub mod spawner_types;
 pub mod timer;
 
 // Re-exports
@@ -85,7 +96,9 @@ pub use agent_driver::{AgentDriver, AgentEventHandler, AgentExecutionContext, Ag
 pub use agent_source::{AgentTaskInjector, AgentSource0};
 pub use config::{TaskChainConfig, TaskQueueConfig, RetryConfig, RunLoopConfig, WorkerPoolConfig};
 pub use error::{TaskChainError, RunLoopError, RunLoopResult};
-pub use task::{Task, TaskChainTracker, TaskPriority, TaskQueue, TaskSource};
+pub use task::{Task, TaskPriority, TaskSource};
+pub use task_chain::TaskChainTracker;
+pub use task_queue::TaskQueue;
 pub use metrics::{MetricsSnapshot, RunLoopMetrics};
 pub use mode::{RunLoopMode, RunLoopPhase, RunLoopRunResult, RunLoopState};
 pub use observer::{
@@ -118,11 +131,15 @@ pub use integration::signal::{SignalEvent, SignalSender, SignalSource1};
 pub use integration::runtime::{RuntimeAgentEventHandler, RuntimeAgentEventHandlerBuilder};
 pub use integration::websocket::{HttpTaskInjector, WebSocketSender, WebSocketSource1, WsMessageType};
 
-// File watcher and webhook exports (trigger types are now in file_watcher module)
-pub use integration::file_watcher::{
-    FileChangeEvent, FileChangeType, FileWatcherConfig, FileWatcherManager, FileWatcherSource1,
-    FileWatcherTrigger, Trigger, TriggerError, TriggerEvent, TriggersConfig, WebhookConfig,
+// Trigger types (shared by file_watcher and webhook)
+pub use integration::trigger_types::{
+    FileWatcherConfig, Trigger, TriggerError, TriggerEvent, TriggersConfig, WebhookConfig,
 };
+// File watcher exports
+pub use integration::file_watcher::FileWatcherTrigger;
+pub use integration::file_watcher_manager::FileWatcherManager;
+pub use integration::file_watcher_source::{FileChangeEvent, FileChangeType, FileWatcherSource1};
+// Webhook exports
 pub use integration::webhook::{WebhookEvent, WebhookSource1, WebhookTrigger};
 
 // Channel bridge exports

@@ -83,15 +83,12 @@ impl InterfaceServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use autohands_runloop::{TaskQueue, TaskQueueConfig};
-    use tokio::sync::mpsc;
+    use autohands_runloop::{RunLoop, RunLoopConfig};
 
     fn create_test_state() -> (Arc<AppState>, Arc<RunLoopState>) {
         let base = Arc::new(AppState::default());
-        let (tx, _rx) = mpsc::channel(16);
-        let config = TaskQueueConfig::default();
-        let queue = Arc::new(TaskQueue::new(config, 100));
-        let runloop = Arc::new(RunLoopState::new(tx, queue));
+        let run_loop = Arc::new(RunLoop::new(RunLoopConfig::default()));
+        let runloop = Arc::new(RunLoopState::from_runloop(run_loop));
         (base, runloop)
     }
 

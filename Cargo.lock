@@ -223,26 +223,37 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 name = "autohands"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "autohands-agent-general",
  "autohands-api",
  "autohands-channel-web",
+ "autohands-checkpoint",
  "autohands-config",
  "autohands-core",
  "autohands-daemon",
+ "autohands-memory-sqlite",
+ "autohands-monitor",
  "autohands-protocols",
  "autohands-provider-anthropic",
  "autohands-provider-ark",
+ "autohands-provider-gemini",
+ "autohands-provider-openai",
  "autohands-runloop",
  "autohands-runtime",
  "autohands-skills-dynamic",
  "autohands-tools-browser",
  "autohands-tools-code",
+ "autohands-tools-cron",
  "autohands-tools-desktop",
  "autohands-tools-filesystem",
+ "autohands-tools-image",
+ "autohands-tools-memory",
+ "autohands-tools-notify",
  "autohands-tools-search",
  "autohands-tools-shell",
  "autohands-tools-skill",
  "autohands-tools-web",
+ "axum",
  "clap",
  "dirs 6.0.0",
  "nix 0.29.0",
@@ -817,6 +828,20 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "autohands-tools-memory"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "autohands-protocols",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

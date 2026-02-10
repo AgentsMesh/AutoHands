@@ -23,7 +23,7 @@ mod fts;
 mod fusion;
 
 pub use backend::HybridMemoryBackend;
-pub use embedding::{OpenAIEmbedding, OpenAIEmbeddingConfig};
+pub use embedding::{CachedEmbeddingProvider, OpenAIEmbedding, OpenAIEmbeddingConfig};
 pub use extension::HybridMemoryExtension;
 pub use fts::FTSBackend;
-pub use fusion::{rrf_fusion, FusionConfig};
+pub use fusion::{linear_fusion, rrf_fusion, FusionConfig};

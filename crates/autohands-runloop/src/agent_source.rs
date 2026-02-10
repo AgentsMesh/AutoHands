@@ -152,7 +152,7 @@ pub struct AgentTaskInjector {
     source: Option<Arc<AgentSource0>>,
     run_loop: Option<Arc<RunLoop>>,
     /// Mode 2: Direct queue injection (for internal RunLoop use)
-    task_queue: Option<Arc<crate::task::TaskQueue>>,
+    task_queue: Option<Arc<crate::task_queue::TaskQueue>>,
 }
 
 impl AgentTaskInjector {
@@ -168,7 +168,7 @@ impl AgentTaskInjector {
     /// Create an injector that directly enqueues to a TaskQueue.
     ///
     /// This is used internally by RunLoop for task processing.
-    pub fn with_queue(task_queue: Arc<crate::task::TaskQueue>) -> Self {
+    pub fn with_queue(task_queue: Arc<crate::task_queue::TaskQueue>) -> Self {
         Self {
             source: None,
             run_loop: None,

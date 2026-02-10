@@ -70,6 +70,10 @@ pub struct AgentConfig {
     /// Additional metadata.
     #[serde(default)]
     pub metadata: Metadata,
+
+    /// 工具输出最大字符数，超出则截断。0 表示不限制。
+    #[serde(default = "default_max_tool_output_chars")]
+    pub max_tool_output_chars: usize,
 }
 
 fn default_max_turns() -> u32 {
@@ -78,6 +82,10 @@ fn default_max_turns() -> u32 {
 
 fn default_timeout() -> u64 {
     300
+}
+
+fn default_max_tool_output_chars() -> usize {
+    100_000
 }
 
 impl AgentConfig {
@@ -97,6 +105,7 @@ impl AgentConfig {
             tools: Vec::new(),
             skills: Vec::new(),
             metadata: HashMap::new(),
+            max_tool_output_chars: default_max_tool_output_chars(),
         }
     }
 
@@ -159,6 +168,10 @@ pub struct AgentResponse {
     /// Metadata about the response.
     #[serde(default)]
     pub metadata: Metadata,
+
+    /// Token usage for this response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<crate::types::Usage>,
 }
 
 #[cfg(test)]
@@ -266,6 +279,7 @@ mod tests {
             is_complete: true,
             tool_calls: Vec::new(),
             metadata: HashMap::new(),
+            usage: None,
         };
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("Hello!"));
@@ -286,6 +300,7 @@ mod tests {
             is_complete: false,
             tool_calls: Vec::new(),
             metadata: HashMap::new(),
+            usage: None,
         };
         let cloned = response.clone();
         assert_eq!(cloned.is_complete, response.is_complete);
@@ -298,6 +313,7 @@ mod tests {
             is_complete: true,
             tool_calls: Vec::new(),
             metadata: HashMap::new(),
+            usage: None,
         };
         let debug = format!("{:?}", response);
         assert!(debug.contains("AgentResponse"));

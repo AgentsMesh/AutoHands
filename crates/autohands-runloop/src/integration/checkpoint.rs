@@ -229,7 +229,6 @@ impl RunLoopObserver for CheckpointObserver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::RunLoopConfig;
 
     #[tokio::test]
     async fn test_memory_checkpoint_manager() {

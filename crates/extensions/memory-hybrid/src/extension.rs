@@ -11,7 +11,7 @@ use autohands_protocols::extension::{Extension, ExtensionContext, ExtensionManif
 use autohands_protocols::types::Version;
 
 use crate::backend::{HybridMemoryBackend, HybridMemoryConfig};
-use crate::embedding::{OpenAIEmbedding, OpenAIEmbeddingConfig};
+use crate::embedding::OpenAIEmbedding;
 use crate::fusion::FusionConfig;
 
 /// Configuration for the hybrid memory extension.

@@ -2,6 +2,8 @@
 
 use thiserror::Error;
 
+use super::ProviderError;
+
 #[derive(Debug, Error)]
 pub enum AgentError {
     #[error("Agent not found: {0}")]
@@ -18,6 +20,9 @@ pub enum AgentError {
 
     #[error("Agent was aborted")]
     Aborted,
+
+    #[error("Provider error: {0}")]
+    ProviderError(#[from] ProviderError),
 }
 
 #[cfg(test)]

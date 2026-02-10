@@ -177,15 +177,12 @@ impl HybridAppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use autohands_runloop::TaskQueueConfig;
+    use autohands_runloop::{RunLoopConfig};
 
     #[tokio::test]
     async fn test_runloop_state_creation() {
-        let (tx, _rx) = mpsc::channel(16);
-        let config = TaskQueueConfig::default();
-        let queue = Arc::new(TaskQueue::new(config, 100));
-
-        let state = RunLoopState::new(tx, queue);
+        let run_loop = Arc::new(RunLoop::new(RunLoopConfig::default()));
+        let state = RunLoopState::from_runloop(run_loop);
         // Just verify it compiles and creates without panicking
         let _ = state;
     }
@@ -215,10 +212,8 @@ mod tests {
     #[tokio::test]
     async fn test_hybrid_state_creation() {
         let base = Arc::new(AppState::default());
-        let (tx, _rx) = mpsc::channel(16);
-        let config = TaskQueueConfig::default();
-        let queue = Arc::new(TaskQueue::new(config, 100));
-        let runloop = Arc::new(RunLoopState::new(tx, queue));
+        let run_loop = Arc::new(RunLoop::new(RunLoopConfig::default()));
+        let runloop = Arc::new(RunLoopState::from_runloop(run_loop));
 
         let hybrid = HybridAppState::new(base, runloop);
         assert!(Arc::strong_count(&hybrid.runloop) >= 1);
@@ -226,24 +221,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_runloop_state_submit_task() {
-        let (tx, mut rx) = mpsc::channel(16);
-        let config = TaskQueueConfig::default();
-        let queue = Arc::new(TaskQueue::new(config, 100));
-        let state = RunLoopState::new(tx, queue.clone());
+        let run_loop = Arc::new(RunLoop::new(RunLoopConfig::default()));
+        let state = RunLoopState::from_runloop(run_loop.clone());
 
-        // Inject an event
+        // Inject a task via RunLoopState
         let result = state
             .submit_task("test:event", serde_json::json!({"data": "test"}))
             .await;
         assert!(result.is_ok());
 
-        // Verify wakeup signal was sent
-        let signal = rx.recv().await;
-        assert!(matches!(signal, Some(WakeupSignal::Explicit { .. })));
-
-        // Verify task was added to queue
-        assert_eq!(queue.len().await, 1);
-        let task = queue.dequeue().await.expect("Task should exist");
-        assert_eq!(task.task_type, "test:event");
+        // Verify task was added to the RunLoop's queue
+        assert_eq!(run_loop.pending_task_count().await, 1);
     }
 }

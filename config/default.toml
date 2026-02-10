@@ -9,17 +9,39 @@ default = "general"
 max_turns = 50
 timeout_seconds = 300
 
+# Providers - API keys are loaded from environment variables automatically.
+# Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, ARK_API_KEY as needed.
+# You can also specify api_key directly (not recommended for production):
+#   api_key = "sk-..."
+
 [providers.anthropic]
-api_key = "${ANTHROPIC_API_KEY}"
 default_model = "claude-sonnet-4-20250514"
 
 [providers.openai]
-api_key = "${OPENAI_API_KEY}"
 default_model = "gpt-4o"
+
+[providers.gemini]
+default_model = "gemini-2.0-flash"
+
+[providers.ark]
+default_model = "doubao-seed-1-8-251228"
 
 [memory]
 backend = "sqlite"
 path = "~/.autohands/memory.db"
+
+# Checkpoint (reliability for 24/7 operation)
+[checkpoint]
+enabled = true
+interval_turns = 5
+storage_path = "~/.autohands/checkpoints"
+max_checkpoints = 10
+
+# Monitor (observability)
+[monitor]
+enabled = true
+health_endpoint = "/health"
+metrics_endpoint = "/metrics"
 
 [extensions]
 paths = ["~/.autohands/extensions"]

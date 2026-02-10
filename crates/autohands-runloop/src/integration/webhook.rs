@@ -11,8 +11,8 @@ use serde_json::json;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info};
 
-// Re-use shared trigger types from file_watcher module
-use super::file_watcher::{Trigger, TriggerError, TriggerEvent, WebhookConfig};
+// Re-use shared trigger types
+use super::trigger_types::{Trigger, TriggerError, TriggerEvent, WebhookConfig};
 use crate::error::RunLoopResult;
 use crate::task::{Task, TaskPriority, TaskSource};
 use crate::mode::RunLoopMode;

@@ -168,28 +168,6 @@ impl FileTaskStore {
         None
     }
 
-    /// Move task file from one status directory to another.
-    async fn move_task_file(
-        &self,
-        id: &Uuid,
-        old_status: TaskStatus,
-        new_status: TaskStatus,
-    ) -> Result<(), QueueError> {
-        if old_status == new_status {
-            return Ok(());
-        }
-
-        let old_path = self.task_path(id, old_status);
-        let new_path = self.task_path(id, new_status);
-
-        if old_path.exists() {
-            fs::rename(&old_path, &new_path).await.map_err(|e| {
-                QueueError::Database(format!("Failed to move task file: {}", e))
-            })?;
-        }
-
-        Ok(())
-    }
 }
 
 #[async_trait]

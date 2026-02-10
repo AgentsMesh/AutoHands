@@ -70,7 +70,7 @@ impl AgentToolsExtension {
     ///
     /// This must be called before the extension is initialized if you want
     /// agents to actually execute.
-    pub fn with_runtime(self, runtime: Arc<AgentRuntime>) -> Self {
+    pub fn with_runtime(self, _runtime: Arc<AgentRuntime>) -> Self {
         // Store runtime temporarily - will be applied in initialize
         // For now, this is a design note: the runtime should be set via
         // ExtensionContext or after initialization

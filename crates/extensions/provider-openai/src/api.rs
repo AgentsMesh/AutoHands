@@ -1,4 +1,6 @@
 //! OpenAI API types.
+//! Fields are required for serde deserialization of API responses.
+#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 

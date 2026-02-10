@@ -84,24 +84,22 @@ struct OpenClawConfig {
 
 /// OpenClaw _meta.json structure.
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-pub struct OpenClawMetaJson {
-    pub owner: String,
-    pub slug: String,
+pub(crate) struct OpenClawMetaJson {
+    pub(crate) owner: String,
+    pub(crate) slug: String,
     #[serde(rename = "displayName")]
-    pub display_name: String,
-    pub latest: OpenClawVersion,
-    #[serde(default)]
-    pub history: Vec<OpenClawVersion>,
+    pub(crate) display_name: String,
+    pub(crate) latest: OpenClawVersion,
+    #[serde(default, rename = "history")]
+    pub(crate) _history: Vec<OpenClawVersion>,
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-pub struct OpenClawVersion {
-    pub version: String,
+pub(crate) struct OpenClawVersion {
+    pub(crate) version: String,
     #[serde(rename = "publishedAt")]
-    pub published_at: u64,
-    pub commit: String,
+    pub(crate) _published_at: u64,
+    pub(crate) commit: String,
 }
 
 impl SkillAdapter for OpenClawAdapter {

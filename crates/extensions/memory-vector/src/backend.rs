@@ -39,6 +39,12 @@ impl VectorMemoryBackend {
     pub fn with_simple_embedding(id: impl Into<String>) -> Self {
         Self::new(id, Arc::new(SimpleHashEmbedding::default()))
     }
+
+    /// Restore a pre-computed embedding into the index without re-embedding.
+    /// Used for restoring persisted embeddings from storage.
+    pub fn restore_embedding(&self, id: String, embedding: crate::embedding::Embedding) {
+        self.index.insert(id, embedding);
+    }
 }
 
 #[async_trait]

@@ -1,7 +1,7 @@
 //! Cron job status tool.
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use autohands_protocols::error::ToolError;
 use autohands_protocols::tool::{Tool, ToolContext, ToolDefinition, ToolResult};
@@ -12,55 +12,6 @@ use autohands_protocols::types::RiskLevel;
 struct CronStatusParams {
     /// ID or name of the task to check.
     id: String,
-    /// Include execution history (default: false).
-    #[serde(default)]
-    include_history: bool,
-}
-
-/// Execution history entry.
-#[derive(Debug, Serialize)]
-struct ExecutionEntry {
-    /// When the execution started.
-    started_at: String,
-    /// When the execution completed.
-    completed_at: Option<String>,
-    /// Whether the execution was successful.
-    success: bool,
-    /// Duration in milliseconds.
-    duration_ms: Option<u64>,
-    /// Error message if failed.
-    error: Option<String>,
-}
-
-/// Response from cron_status.
-#[derive(Debug, Serialize)]
-struct CronStatusResponse {
-    /// Unique ID of the task.
-    id: String,
-    /// Name of the task.
-    name: String,
-    /// Cron schedule expression.
-    schedule: String,
-    /// Command or prompt to execute.
-    command: String,
-    /// Whether the task is enabled.
-    enabled: bool,
-    /// Current status (idle, running, failed).
-    status: String,
-    /// When the task was created.
-    created_at: String,
-    /// When the task will next run.
-    next_run: Option<String>,
-    /// When the task last ran.
-    last_run: Option<String>,
-    /// Total number of executions.
-    total_runs: u32,
-    /// Number of successful executions.
-    successful_runs: u32,
-    /// Number of failed executions.
-    failed_runs: u32,
-    /// Recent execution history (if requested).
-    history: Option<Vec<ExecutionEntry>>,
 }
 
 /// Get cron job status tool implementation.

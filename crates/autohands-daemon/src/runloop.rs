@@ -96,6 +96,7 @@ impl RunLoopRunner {
                 max_turns: 50,
                 timeout_seconds: 300,
                 checkpoint_enabled: false,
+                ..Default::default()
             },
         };
         let agent_runtime = Arc::new(AgentRuntime::new(

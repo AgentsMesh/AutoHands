@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn test_convert_tool_result_message() {
-        let mut msg = Message {
+        let msg = Message {
             role: MessageRole::Tool,
             content: MessageContent::Text("Tool output".to_string()),
             name: None,

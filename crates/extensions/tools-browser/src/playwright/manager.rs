@@ -46,7 +46,6 @@ impl Default for PlaywrightManagerConfig {
 }
 
 /// Page state tracking.
-#[allow(dead_code)]
 struct PageState {
     page_id: String,
     browser_id: String,

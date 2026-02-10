@@ -173,14 +173,13 @@ impl HealthCheckable for LivenessCheck {
 /// Memory check.
 pub struct MemoryCheck {
     /// Memory usage threshold percentage (0-100).
-    #[allow(dead_code)]
-    threshold_percent: u32,
+    _threshold_percent: u32,
 }
 
 impl MemoryCheck {
     /// Create a new memory check.
     pub fn new(threshold_percent: u32) -> Self {
-        Self { threshold_percent }
+        Self { _threshold_percent: threshold_percent }
     }
 }
 

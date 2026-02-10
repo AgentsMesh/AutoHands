@@ -63,12 +63,6 @@ impl AdapterRegistry {
         }
     }
 
-    /// Add a custom adapter to the registry.
-    #[allow(dead_code)]
-    pub fn register(&mut self, adapter: Box<dyn SkillAdapter>) {
-        self.adapters.push(adapter);
-    }
-
     /// Get all supported file names across all adapters.
     pub fn supported_file_names(&self) -> Vec<&'static str> {
         let mut names: Vec<&'static str> = self

@@ -75,8 +75,13 @@ impl OpenAIProvider {
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let text = response.text().await.unwrap_or_default();
-            return Err(ProviderError::ApiError { status, message: text });
+            let body = response.text().await.unwrap_or_default();
+            // 解析 OpenAI 错误 JSON: {"error": {"message": "...", "type": "..."}}
+            let message = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v["error"]["message"].as_str().map(String::from))
+                .unwrap_or(body);
+            return Err(ProviderError::from_api_response(status, message));
         }
 
         Ok(response)
@@ -331,11 +336,10 @@ mod tests {
             let result = provider.complete(request).await;
             assert!(result.is_err());
             match result.unwrap_err() {
-                ProviderError::ApiError { status, message } => {
-                    assert_eq!(status, 401);
+                ProviderError::AuthenticationFailed(message) => {
                     assert!(message.contains("Invalid API key"));
                 }
-                _ => panic!("Expected ApiError"),
+                _ => panic!("Expected AuthenticationFailed"),
             }
         }
 
@@ -361,10 +365,8 @@ mod tests {
             let result = provider.complete(request).await;
             assert!(result.is_err());
             match result.unwrap_err() {
-                ProviderError::ApiError { status, .. } => {
-                    assert_eq!(status, 429);
-                }
-                _ => panic!("Expected ApiError"),
+                ProviderError::RateLimited { .. } => {}
+                _ => panic!("Expected RateLimited"),
             }
         }
 
