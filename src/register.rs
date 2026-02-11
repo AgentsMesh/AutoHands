@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use autohands_config::{Config, ConfigLoader};
 use autohands_core::registry::{ProviderRegistry, ToolRegistry};
@@ -364,7 +364,13 @@ pub(crate) async fn register_agents(
     }
 
     let default_provider_id = &provider_ids[0];
-    let provider = provider_registry.get(default_provider_id).unwrap();
+    let provider = match provider_registry.get(default_provider_id) {
+        Some(p) => p,
+        None => {
+            error!("Default provider '{}' not found in registry", default_provider_id);
+            return;
+        }
+    };
 
     // Use doubao-seed-1-8-251228 as the default model
     // Note: For Ark platform, you may need to use your endpoint ID instead

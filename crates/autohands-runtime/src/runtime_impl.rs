@@ -118,7 +118,8 @@ impl AgentRuntime {
         // Create abort signal
         let abort_signal = Arc::new(AbortSignal::new());
 
-        // Register as running
+        // Register as running — use a RAII guard to ensure cleanup on all paths
+        // (including panics, early returns, and errors).
         self.running.insert(
             session_id.to_string(),
             AgentHandle {
@@ -126,6 +127,12 @@ impl AgentRuntime {
                 abort_signal: abort_signal.clone(),
             },
         );
+        let running_ref = &self.running;
+        let session_key = session_id.to_string();
+        let _running_guard = RunningGuard {
+            running: running_ref,
+            key: &session_key,
+        };
 
         // Get conversation history for this session
         let history = self.history_manager.get(session_id);
@@ -168,15 +175,16 @@ impl AgentRuntime {
             }
         }
 
-        // Remove from running
-        self.running.remove(session_id);
-
+        // _running_guard drops here, removing from self.running on all paths
         result
     }
 
     /// Abort a running agent execution.
+    ///
+    /// Only sets the abort signal without removing from the running map.
+    /// The `RunningGuard` RAII will clean up the map entry when execution completes.
     pub fn abort(&self, session_id: &str) -> bool {
-        if let Some((_, handle)) = self.running.remove(session_id) {
+        if let Some(handle) = self.running.get(session_id) {
             handle.abort_signal.abort();
             info!("Aborted agent execution: {}", session_id);
             true
@@ -196,6 +204,11 @@ impl AgentRuntime {
         self.running.len()
     }
 
+    /// Get the set of currently running session IDs.
+    pub fn running_sessions(&self) -> std::collections::HashSet<String> {
+        self.running.iter().map(|entry| entry.key().clone()).collect()
+    }
+
     /// Get session manager.
     pub fn session_manager(&self) -> &Arc<SessionManager> {
         &self.session_manager
@@ -204,5 +217,20 @@ impl AgentRuntime {
     /// Clear conversation history for a session.
     pub fn clear_history(&self, session_id: &str) {
         self.history_manager.clear(session_id);
+    }
+}
+
+/// RAII guard that removes a session from the `running` DashMap on drop.
+///
+/// Ensures the running map is cleaned up even if the execution path panics
+/// or returns early due to an error.
+struct RunningGuard<'a> {
+    running: &'a dashmap::DashMap<String, AgentHandle>,
+    key: &'a str,
+}
+
+impl Drop for RunningGuard<'_> {
+    fn drop(&mut self) {
+        self.running.remove(self.key);
     }
 }

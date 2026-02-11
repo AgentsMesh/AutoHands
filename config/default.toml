@@ -6,8 +6,8 @@ port = 8080
 
 [agent]
 default = "general"
-max_turns = 50
-timeout_seconds = 300
+# Note: max_turns and timeout_seconds are no longer enforced.
+# Agents run indefinitely until task completion or explicit abort.
 
 # Providers - API keys are loaded from environment variables automatically.
 # Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, ARK_API_KEY as needed.

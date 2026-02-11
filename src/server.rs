@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -14,9 +14,7 @@ use autohands_checkpoint::{CheckpointConfig as CpConfig, CheckpointManager, File
 use autohands_config::{Config, ConfigLoader};
 use autohands_core::registry::{ChannelRegistry, ProviderRegistry, ToolRegistry};
 use autohands_core::Kernel;
-use autohands_monitor::health::{ComponentHealth, HealthStatus};
 use autohands_monitor::metrics::MetricsRegistry;
-use autohands_monitor::HealthEndpoint;
 use autohands_runtime::{AgentLoopConfig, AgentRuntime, AgentRuntimeConfig};
 
 use crate::adapters::{autohands_dir, CheckpointAdapter, MetricsWrappedHandler};
@@ -136,8 +134,6 @@ pub(crate) async fn run_server(
     let runtime_config = AgentRuntimeConfig {
         max_concurrent: 10,
         default_loop_config: AgentLoopConfig {
-            max_turns: config.agent.max_turns,
-            timeout_seconds: config.agent.timeout_seconds,
             checkpoint_enabled: config.checkpoint.enabled,
             ..Default::default()
         },
@@ -193,7 +189,6 @@ pub(crate) async fn run_server(
 
     // Initialize monitor system
     let metrics_registry = Arc::new(MetricsRegistry::new());
-    let health_endpoint = Arc::new(HealthEndpoint::new(env!("CARGO_PKG_VERSION")));
     if config.monitor.enabled {
         metrics_registry.register_counter("autohands_requests_total", "Total requests").await;
         metrics_registry.register_counter("autohands_tasks_completed", "Tasks completed").await;
@@ -206,7 +201,7 @@ pub(crate) async fn run_server(
     // Configure transcript directory for session recording
     // Use ~/.autohands/sessions for agent session transcripts
     let transcript_dir = autohands_dir().join("sessions");
-    std::fs::create_dir_all(&transcript_dir).expect("Failed to create sessions directory");
+    std::fs::create_dir_all(&transcript_dir)?;
     info!("Session transcripts will be saved to: {}", transcript_dir.display());
 
     // Create app state
@@ -235,15 +230,10 @@ pub(crate) async fn run_server(
         port: web_port,
     };
     let web_channel = Arc::new(WebChannel::new("web", web_channel_config));
-    channel_registry
-        .register(web_channel.clone())
-        .expect("Failed to register web channel");
+    channel_registry.register(web_channel.clone())?;
 
     // Start all channels
-    channel_registry
-        .start_all()
-        .await
-        .expect("Failed to start channels");
+    channel_registry.start_all().await?;
     info!("Web Channel started at http://{}:{}", host, web_port);
 
     // Create and start channel bridge (connects channels to RunLoop)
@@ -286,76 +276,16 @@ pub(crate) async fn run_server(
     let interface_config = InterfaceConfig::new(&host, port);
     // Create API WebSocket Channel for response routing
     let api_ws_channel = Arc::new(autohands_api::ApiWsChannel::new());
-    channel_registry
-        .register(api_ws_channel.clone())
-        .expect("Failed to register api-ws channel");
-    api_ws_channel.start().await.expect("Failed to start api-ws channel");
+    channel_registry.register(api_ws_channel.clone())?;
+    api_ws_channel.start().await?;
     info!("API WebSocket Channel registered for response routing");
 
-    let hybrid_state = Arc::new(autohands_api::HybridAppState::new(state, runloop_state, api_ws_channel));
+    let hybrid_state = Arc::new(autohands_api::HybridAppState::new(state.clone(), runloop_state, api_ws_channel));
     let base_router = autohands_api::create_router_with_hybrid_state(hybrid_state);
 
-    // Add monitor routes (/health, /metrics) if enabled
-    let app = if config.monitor.enabled {
-        let health_ep = health_endpoint.clone();
-        let metrics_reg = metrics_registry.clone();
-        let provider_reg_for_health = provider_registry.clone();
-        let runtime_for_health = agent_runtime.clone();
-
-        base_router
-            .route(&config.monitor.health_endpoint, axum::routing::get(move || {
-                let health = health_ep.clone();
-                let providers = provider_reg_for_health.clone();
-                let runtime = runtime_for_health.clone();
-                async move {
-                    let mut components = std::collections::HashMap::new();
-
-                    // Provider status
-                    let provider_ids = providers.list_ids();
-                    let provider_status = if provider_ids.is_empty() {
-                        ComponentHealth {
-                            status: HealthStatus::Unhealthy,
-                            details: Some("No providers registered".to_string()),
-                        }
-                    } else {
-                        ComponentHealth {
-                            status: HealthStatus::Healthy,
-                            details: Some(format!("count={}", provider_ids.len())),
-                        }
-                    };
-                    components.insert("providers".to_string(), provider_status);
-
-                    // Runtime status
-                    let running = runtime.running_count();
-                    components.insert("runtime".to_string(), ComponentHealth {
-                        status: HealthStatus::Healthy,
-                        details: Some(format!("active_tasks={}", running)),
-                    });
-
-                    let response = health.check(components);
-                    let status_code = match response.status {
-                        HealthStatus::Unhealthy => {
-                            axum::http::StatusCode::SERVICE_UNAVAILABLE
-                        }
-                        _ => axum::http::StatusCode::OK,
-                    };
-                    (status_code, axum::Json(response))
-                }
-            }))
-            .route(&config.monitor.metrics_endpoint, axum::routing::get(move || {
-                let registry = metrics_reg.clone();
-                async move {
-                    let metrics = registry.export().await;
-                    (
-                        axum::http::StatusCode::OK,
-                        [("content-type", "text/plain; charset=utf-8")],
-                        metrics,
-                    )
-                }
-            }))
-    } else {
-        base_router
-    };
+    // Monitor routes (/health, /metrics) are already built into the API router
+    // via create_router_with_hybrid_state. No need to add them again here.
+    let app = base_router;
 
     info!("AutoHands ready:");
     info!("  API Server:    http://{}:{}", host, port);
@@ -371,11 +301,103 @@ pub(crate) async fn run_server(
         info!("  GET  {}      - Prometheus 指标", config.monitor.metrics_endpoint);
     }
 
-    // Run server (this will block until shutdown)
+    // Spawn periodic cleanup task for session, history, and transcript memory management (#6, #16)
+    {
+        let session_mgr = agent_runtime.session_manager().clone();
+        let history_mgr = agent_runtime.history_manager().clone();
+        let transcript_mgr = state.transcript_manager.clone();
+        let agent_runtime_clone = agent_runtime.clone();
+        tokio::spawn(async move {
+            let cleanup_interval = std::time::Duration::from_secs(10 * 60); // 10 minutes
+            let max_idle = std::time::Duration::from_secs(60 * 60); // 1 hour
+            loop {
+                tokio::time::sleep(cleanup_interval).await;
+                // Skip sessions with running agents to avoid data loss
+                let running_sessions = agent_runtime_clone.running_sessions();
+                let expired = session_mgr.cleanup_with_exclusion(max_idle, &running_sessions);
+                for session_id in &expired {
+                    history_mgr.remove(session_id);
+                    transcript_mgr.remove_writer(session_id).await;
+                }
+                if !expired.is_empty() {
+                    info!(
+                        "Periodic cleanup: removed {} idle session(s), remaining sessions={}, histories={}",
+                        expired.len(),
+                        session_mgr.count(),
+                        history_mgr.session_count(),
+                    );
+                }
+            }
+        });
+        info!("Periodic session/history cleanup task started (interval=10min, max_idle=1h)");
+    }
+
+    // Run server with graceful shutdown (#2)
     let addr: std::net::SocketAddr = format!("{}:{}", interface_config.host, interface_config.port).parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     info!("Interface server listening on {}", addr);
-    axum::serve(listener, app).await?;
+
+    // Clone run_loop and shutdown_notify for use in the shutdown signal handler
+    let shutdown_run_loop = run_loop.clone();
+    let shutdown_notify = state.shutdown_notify.clone();
+    let shutdown_signal = async move {
+        let ctrl_c = tokio::signal::ctrl_c();
+        let api_shutdown = shutdown_notify.notified();
+
+        #[cfg(unix)]
+        {
+            let sigterm_result = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
+            match sigterm_result {
+                Ok(mut sigterm) => {
+                    tokio::select! {
+                        _ = ctrl_c => {
+                            info!("Received Ctrl-C, initiating graceful shutdown...");
+                        }
+                        _ = sigterm.recv() => {
+                            info!("Received SIGTERM, initiating graceful shutdown...");
+                        }
+                        _ = api_shutdown => {
+                            info!("Received API shutdown request, initiating graceful shutdown...");
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to install SIGTERM handler: {}, falling back to Ctrl-C only", e);
+                    tokio::select! {
+                        _ = ctrl_c => {
+                            info!("Received Ctrl-C, initiating graceful shutdown...");
+                        }
+                        _ = api_shutdown => {
+                            info!("Received API shutdown request, initiating graceful shutdown...");
+                        }
+                    }
+                }
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            tokio::select! {
+                _ = ctrl_c => {
+                    info!("Received Ctrl-C, initiating graceful shutdown...");
+                }
+                _ = api_shutdown => {
+                    info!("Received API shutdown request, initiating graceful shutdown...");
+                }
+            }
+        }
+
+        // Stop RunLoop so in-flight agents can flush checkpoints
+        shutdown_run_loop.stop();
+
+        // Grace period: allow in-flight tasks to complete
+        info!("Waiting 5s grace period for in-flight tasks...");
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    };
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal)
+        .await?;
 
     info!("Shutting down...");
     Ok(())

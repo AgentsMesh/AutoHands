@@ -20,8 +20,6 @@ use crate::transcript::TranscriptWriter;
 /// Configuration for the agent loop.
 #[derive(Debug, Clone)]
 pub struct AgentLoopConfig {
-    pub max_turns: u32,
-    pub timeout_seconds: u64,
     /// Enable checkpoint support.
     pub checkpoint_enabled: bool,
     /// 工具输出最大字符数，超出则截断并附加提示。0 表示不限制。
@@ -31,8 +29,6 @@ pub struct AgentLoopConfig {
 impl Default for AgentLoopConfig {
     fn default() -> Self {
         Self {
-            max_turns: 50,
-            timeout_seconds: 300,
             checkpoint_enabled: false,
             max_tool_output_chars: 100_000, // ~25K tokens
         }
@@ -126,8 +122,7 @@ impl AgentLoop {
             }
         }
 
-        self.run_loop_inner(agent, &mut ctx, messages, 0, &start_time)
-            .await
+        self.run_loop_inner(agent, &mut ctx, messages, 0, &start_time).await
     }
 
     /// Record session end to transcript.
@@ -209,8 +204,7 @@ impl AgentLoop {
             }
         }
 
-        self.run_loop_inner(agent, &mut ctx, messages, start_turn, &start_time)
-            .await
+        self.run_loop_inner(agent, &mut ctx, messages, start_turn, &start_time).await
     }
 
     /// Inject memory context by appending a system message (used by `run()`).
@@ -297,28 +291,17 @@ impl AgentLoop {
                 return Err(AgentError::Aborted);
             }
 
-            if turn >= self.config.max_turns {
-                // Flush memory before returning error -- capture valuable info from the session
-                if let Some(ref memory) = self.memory_backend {
-                    memory_persistence::flush_memories_to_backend(
-                        &messages,
-                        memory,
-                        "session-end-flush",
-                    )
-                    .await;
-                }
-                self.record_session_end("max_turns", Some("Max turns exceeded"), turn, start_time)
-                    .await;
-                return Err(AgentError::MaxTurnsExceeded(turn));
-            }
-
             turn += 1;
             debug!("Agent loop turn {}", turn);
 
             // Process through agent (with context length recovery)
             ctx.history = messages.clone();
+            let last_msg = messages
+                .last()
+                .ok_or_else(|| AgentError::ExecutionFailed("Message history is empty".to_string()))?
+                .clone();
             let response = match agent
-                .process(messages.last().unwrap().clone(), ctx.clone())
+                .process(last_msg, ctx.clone())
                 .await
             {
                 Ok(resp) => resp,
@@ -331,8 +314,12 @@ impl AgentLoop {
                     );
                     messages = self.compress_messages(messages).await?;
                     ctx.history = messages.clone();
+                    let last_msg = messages
+                        .last()
+                        .ok_or_else(|| AgentError::ExecutionFailed("Message history is empty after compression".to_string()))?
+                        .clone();
                     agent
-                        .process(messages.last().unwrap().clone(), ctx.clone())
+                        .process(last_msg, ctx.clone())
                         .await?
                 }
                 Err(e) => return Err(e),

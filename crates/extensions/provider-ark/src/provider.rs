@@ -40,7 +40,11 @@ impl ArkProvider {
         Self {
             api_key,
             api_url,
-            client: reqwest::Client::new(),
+            client: reqwest::ClientBuilder::new()
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .timeout(std::time::Duration::from_secs(300))
+                .build()
+                .expect("Failed to build HTTP client"),
             models: get_models(),
             capabilities: ProviderCapabilities {
                 streaming: true,

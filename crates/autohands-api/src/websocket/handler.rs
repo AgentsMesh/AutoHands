@@ -65,49 +65,58 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         }
     });
 
-    // Handle incoming messages
+    // Handle incoming messages with idle timeout
     let tx_clone = tx.clone();
     let conn_id = connection_id.clone();
     let state_clone = state.clone();
+    let read_timeout = std::time::Duration::from_secs(60);
 
-    while let Some(result) = receiver.next().await {
-        match result {
-            Ok(Message::Text(text)) => {
-                debug!("Received: {}", text);
-                if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text) {
-                    if let Err(e) =
-                        handle_message_direct(ws_msg, &tx_clone, &conn_id, &state_clone).await
-                    {
-                        error!("Error handling message: {}", e);
+    loop {
+        match tokio::time::timeout(read_timeout, receiver.next()).await {
+            Ok(Some(result)) => match result {
+                Ok(Message::Text(text)) => {
+                    debug!("Received: {}", text);
+                    if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text) {
+                        if let Err(e) =
+                            handle_message_direct(ws_msg, &tx_clone, &conn_id, &state_clone).await
+                        {
+                            error!("Error handling message: {}", e);
+                        }
+                    } else {
+                        warn!("Failed to parse WebSocket message");
+                        let _ = tx_clone
+                            .send(WsMessage::Error {
+                                code: "PARSE_ERROR".to_string(),
+                                message: "Failed to parse message".to_string(),
+                            })
+                            .await;
                     }
-                } else {
-                    warn!("Failed to parse WebSocket message");
-                    let _ = tx_clone
-                        .send(WsMessage::Error {
-                            code: "PARSE_ERROR".to_string(),
-                            message: "Failed to parse message".to_string(),
-                        })
-                        .await;
                 }
-            }
-            Ok(Message::Close(_)) => {
-                info!("WebSocket closed: {}", conn_id);
+                Ok(Message::Close(_)) => {
+                    info!("WebSocket closed: {}", conn_id);
+                    break;
+                }
+                Ok(Message::Ping(data)) => {
+                    debug!("Ping received");
+                    let _ = data;
+                }
+                Err(e) => {
+                    error!("WebSocket error: {}", e);
+                    break;
+                }
+                _ => {}
+            },
+            Ok(None) => break, // Stream ended
+            Err(_) => {
+                info!("WebSocket idle timeout: {}", conn_id);
                 break;
             }
-            Ok(Message::Ping(data)) => {
-                debug!("Ping received");
-                let _ = data;
-            }
-            Err(e) => {
-                error!("WebSocket error: {}", e);
-                break;
-            }
-            _ => {}
         }
     }
 
-    // Cleanup
-    sender_task.abort();
+    // Cleanup: drop tx so sender_task receives None and exits naturally
+    drop(tx_clone);
+    let _ = sender_task.await;
     info!("WebSocket disconnected: {}", connection_id);
 }
 
@@ -146,45 +155,54 @@ async fn handle_socket_with_runloop(socket: WebSocket, state: Arc<HybridAppState
         }
     });
 
-    // Handle incoming messages
+    // Handle incoming messages with idle timeout
     let tx_clone = tx.clone();
     let conn_id = connection_id.clone();
     let state_clone = state.clone();
+    let read_timeout = std::time::Duration::from_secs(60);
 
-    while let Some(result) = receiver.next().await {
-        match result {
-            Ok(Message::Text(text)) => {
-                debug!("Received: {}", text);
-                if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text) {
-                    if let Err(e) =
-                        handle_message_with_runloop(ws_msg, &tx_clone, &conn_id, &state_clone).await
-                    {
-                        error!("Error handling message: {}", e);
+    loop {
+        match tokio::time::timeout(read_timeout, receiver.next()).await {
+            Ok(Some(result)) => match result {
+                Ok(Message::Text(text)) => {
+                    debug!("Received: {}", text);
+                    if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text) {
+                        if let Err(e) =
+                            handle_message_with_runloop(ws_msg, &tx_clone, &conn_id, &state_clone).await
+                        {
+                            error!("Error handling message: {}", e);
+                        }
+                    } else {
+                        warn!("Failed to parse WebSocket message");
+                        let _ = tx_clone.send(WsMessage::error("PARSE_ERROR", "Failed to parse message")).await;
                     }
-                } else {
-                    warn!("Failed to parse WebSocket message");
-                    let _ = tx_clone.send(WsMessage::error("PARSE_ERROR", "Failed to parse message")).await;
                 }
-            }
-            Ok(Message::Close(_)) => {
-                info!("WebSocket closed: {}", conn_id);
+                Ok(Message::Close(_)) => {
+                    info!("WebSocket closed: {}", conn_id);
+                    break;
+                }
+                Ok(Message::Ping(data)) => {
+                    debug!("Ping received");
+                    let _ = data;
+                }
+                Err(e) => {
+                    error!("WebSocket error: {}", e);
+                    break;
+                }
+                _ => {}
+            },
+            Ok(None) => break, // Stream ended
+            Err(_) => {
+                info!("WebSocket idle timeout: {}", conn_id);
                 break;
             }
-            Ok(Message::Ping(data)) => {
-                debug!("Ping received");
-                let _ = data;
-            }
-            Err(e) => {
-                error!("WebSocket error: {}", e);
-                break;
-            }
-            _ => {}
         }
     }
 
-    // Cleanup: unregister from ApiWsChannel
+    // Cleanup: unregister and drop tx so sender_task exits naturally
     state.api_ws_channel.unregister_connection(&connection_id);
-    sender_task.abort();
+    drop(tx_clone);
+    let _ = sender_task.await;
     info!("WebSocket disconnected: {}", connection_id);
 }
 

@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 use crate::error::RunLoopResult;
 use crate::task::{Task, TaskPriority, TaskSource};
@@ -73,7 +73,9 @@ impl SignalSource1 {
         // Start signal handlers
         let tx_clone = tx.clone();
         tokio::spawn(async move {
-            Self::handle_signals(tx_clone).await;
+            if let Err(e) = Self::handle_signals(tx_clone).await {
+                error!("Signal handler failed: {}", e);
+            }
         });
 
         (Source1Receiver::new(source, rx), signal_sender)
@@ -89,12 +91,12 @@ impl SignalSource1 {
 
     /// Handle OS signals (Unix only).
     #[cfg(unix)]
-    async fn handle_signals(tx: mpsc::Sender<PortMessage>) {
+    async fn handle_signals(tx: mpsc::Sender<PortMessage>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use tokio::signal::unix::{signal, SignalKind};
 
-        let mut sigterm = signal(SignalKind::terminate()).expect("Failed to create SIGTERM handler");
-        let mut sigint = signal(SignalKind::interrupt()).expect("Failed to create SIGINT handler");
-        let mut sighup = signal(SignalKind::hangup()).expect("Failed to create SIGHUP handler");
+        let mut sigterm = signal(SignalKind::terminate())?;
+        let mut sigint = signal(SignalKind::interrupt())?;
+        let mut sighup = signal(SignalKind::hangup())?;
 
         loop {
             tokio::select! {

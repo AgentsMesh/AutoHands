@@ -59,8 +59,8 @@ impl From<PersistedSession> for Session {
         use chrono::{TimeZone, Utc};
         Self {
             id: p.id,
-            created_at: Utc.timestamp_opt(p.created_at, 0).unwrap(),
-            last_active: Utc.timestamp_opt(p.last_active, 0).unwrap(),
+            created_at: Utc.timestamp_opt(p.created_at, 0).single().unwrap_or_else(Utc::now),
+            last_active: Utc.timestamp_opt(p.last_active, 0).single().unwrap_or_else(Utc::now),
             data: p.data,
         }
     }

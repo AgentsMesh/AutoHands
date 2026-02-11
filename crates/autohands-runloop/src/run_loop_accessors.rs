@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
-use tracing::info;
+use tracing::{info, warn};
 
 use autohands_core::registry::ChannelRegistry;
 
@@ -98,6 +98,8 @@ impl RunLoop {
     /// Stop the RunLoop. Similar to CFRunLoopStop.
     pub fn stop(&self) {
         self.set_state(RunLoopState::Stopping);
-        let _ = self.wakeup_tx.try_send(WakeupSignal::Stop);
+        if let Err(e) = self.wakeup_tx.try_send(WakeupSignal::Stop) {
+            warn!("Failed to send Stop wakeup signal: {}, RunLoop will stop on next state check", e);
+        }
     }
 }

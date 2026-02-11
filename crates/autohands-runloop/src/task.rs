@@ -184,10 +184,9 @@ impl Task {
 
     /// Get or create correlation ID.
     pub fn ensure_correlation_id(&mut self) -> String {
-        if self.correlation_id.is_none() {
-            self.correlation_id = Some(Uuid::new_v4().to_string());
-        }
-        self.correlation_id.clone().unwrap()
+        self.correlation_id
+            .get_or_insert_with(|| Uuid::new_v4().to_string())
+            .clone()
     }
 }
 

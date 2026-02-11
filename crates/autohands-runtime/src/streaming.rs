@@ -54,18 +54,16 @@ impl Stream for AgentEventStream {
 /// Streaming agent loop executor.
 pub struct StreamingAgentLoop {
     tool_registry: Arc<ToolRegistry>,
-    config: AgentLoopConfig,
 }
 
 impl StreamingAgentLoop {
     pub fn new(
         _provider_registry: Arc<ProviderRegistry>,
         tool_registry: Arc<ToolRegistry>,
-        config: AgentLoopConfig,
+        _config: AgentLoopConfig,
     ) -> Self {
         Self {
             tool_registry,
-            config,
         }
     }
 
@@ -79,15 +77,16 @@ impl StreamingAgentLoop {
         let (tx, rx) = mpsc::channel(100);
 
         let tool_registry = self.tool_registry.clone();
-        let config = self.config.clone();
 
+        let error_tx = tx.clone();
         tokio::spawn(async move {
             let executor = StreamExecutor {
                 tool_registry,
-                config,
                 tx,
             };
-            let _ = executor.execute(agent, ctx, initial_message).await;
+            if let Err(e) = executor.execute(agent, ctx, initial_message).await {
+                let _ = error_tx.send(StreamEvent::Error { error: e.to_string() }).await;
+            }
         });
 
         AgentEventStream { receiver: rx }
@@ -96,7 +95,6 @@ impl StreamingAgentLoop {
 
 struct StreamExecutor {
     tool_registry: Arc<ToolRegistry>,
-    config: AgentLoopConfig,
     tx: mpsc::Sender<StreamEvent>,
 }
 
@@ -121,22 +119,21 @@ impl StreamExecutor {
                 return Err(AgentError::Aborted);
             }
 
-            if turn >= self.config.max_turns {
-                self.send(StreamEvent::Error {
-                    error: format!("Max turns exceeded: {}", turn),
-                })
-                .await;
-                return Err(AgentError::MaxTurnsExceeded(turn));
-            }
-
             turn += 1;
             self.send(StreamEvent::TurnStart { turn }).await;
             debug!("Streaming agent loop turn {}", turn);
 
             // Process through agent
             ctx.history = messages.clone();
+            let last_msg = match messages.last() {
+                Some(m) => m.clone(),
+                None => {
+                    self.send(StreamEvent::Error { error: "Message history is empty".to_string() }).await;
+                    return Err(AgentError::ExecutionFailed("Message history is empty".to_string()));
+                }
+            };
             let response = match agent
-                .process(messages.last().unwrap().clone(), ctx.clone())
+                .process(last_msg, ctx.clone())
                 .await
             {
                 Ok(r) => r,
@@ -202,7 +199,10 @@ impl StreamExecutor {
             None => return format!("Tool not found: {}", tool_call.name),
         };
 
-        let tool_ctx = ToolContext::new(&ctx.session_id, std::env::current_dir().unwrap());
+        let work_dir = ctx.work_dir.clone().unwrap_or_else(||
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        );
+        let tool_ctx = ToolContext::new(&ctx.session_id, work_dir);
 
         match tool.execute(tool_call.arguments.clone(), tool_ctx).await {
             Ok(result) => result.content,

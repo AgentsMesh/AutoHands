@@ -1,6 +1,6 @@
 //! Session management.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -62,6 +62,47 @@ impl SessionManager {
         if let Some(session) = self.sessions.write().get_mut(id) {
             session.last_active = chrono::Utc::now();
         }
+    }
+
+    /// Remove sessions that have been idle longer than `max_idle`.
+    ///
+    /// Returns the list of removed session IDs.
+    pub fn cleanup(&self, max_idle: std::time::Duration) -> Vec<String> {
+        let cutoff = chrono::Utc::now() - chrono::Duration::from_std(max_idle).unwrap_or_default();
+        let mut sessions = self.sessions.write();
+        let expired: Vec<String> = sessions
+            .iter()
+            .filter(|(_, s)| s.last_active < cutoff)
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for id in &expired {
+            sessions.remove(id);
+        }
+        expired
+    }
+
+    /// Remove sessions that have been idle longer than `max_idle`, excluding specified sessions.
+    ///
+    /// Returns the list of removed session IDs.
+    pub fn cleanup_with_exclusion(&self, max_idle: std::time::Duration, exclude: &HashSet<String>) -> Vec<String> {
+        let cutoff = chrono::Utc::now() - chrono::Duration::from_std(max_idle).unwrap_or_default();
+        let mut sessions = self.sessions.write();
+        let expired: Vec<String> = sessions
+            .iter()
+            .filter(|(id, s)| s.last_active < cutoff && !exclude.contains(id.as_str()))
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for id in &expired {
+            sessions.remove(id);
+        }
+        expired
+    }
+
+    /// Get the number of active sessions.
+    pub fn count(&self) -> usize {
+        self.sessions.read().len()
     }
 }
 

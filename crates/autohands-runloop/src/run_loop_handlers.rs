@@ -1,12 +1,19 @@
 //! RunLoop observer notification and cleanup methods.
 
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
+
+use futures::FutureExt;
+use tracing::error;
 
 use crate::mode::{RunLoopMode, RunLoopPhase};
 use crate::run_loop::RunLoop;
 
 impl RunLoop {
     /// Notify observers of a phase.
+    ///
+    /// Each observer call is isolated with `catch_unwind` so that a panicking
+    /// observer cannot kill the RunLoop main loop.
     pub(crate) async fn notify_observers(&self, phase: RunLoopPhase, mode: &RunLoopMode) {
         // Global observers
         {
@@ -14,7 +21,22 @@ impl RunLoop {
             for handle in observers.iter() {
                 if handle.should_trigger(phase) {
                     self.metrics.record_observer_notification();
-                    handle.observer().on_phase(phase, self).await;
+                    let result = AssertUnwindSafe(handle.observer().on_phase(phase, self))
+                        .catch_unwind()
+                        .await;
+                    if let Err(panic_info) = result {
+                        let msg = panic_info
+                            .downcast_ref::<&str>()
+                            .map(|s| s.to_string())
+                            .or_else(|| panic_info.downcast_ref::<String>().cloned())
+                            .unwrap_or_else(|| "unknown panic".to_string());
+                        error!(
+                            "Observer '{}' panicked during phase {:?}: {}",
+                            handle.id(),
+                            phase,
+                            msg
+                        );
+                    }
                     handle.mark_fired();
                 }
             }
@@ -26,7 +48,22 @@ impl RunLoop {
             for handle in observers.iter() {
                 if handle.should_trigger(phase) {
                     self.metrics.record_observer_notification();
-                    handle.observer().on_phase(phase, self).await;
+                    let result = AssertUnwindSafe(handle.observer().on_phase(phase, self))
+                        .catch_unwind()
+                        .await;
+                    if let Err(panic_info) = result {
+                        let msg = panic_info
+                            .downcast_ref::<&str>()
+                            .map(|s| s.to_string())
+                            .or_else(|| panic_info.downcast_ref::<String>().cloned())
+                            .unwrap_or_else(|| "unknown panic".to_string());
+                        error!(
+                            "Observer '{}' panicked during phase {:?}: {}",
+                            handle.id(),
+                            phase,
+                            msg
+                        );
+                    }
                     handle.mark_fired();
                 }
             }

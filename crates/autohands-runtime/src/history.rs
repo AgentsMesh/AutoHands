@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use autohands_protocols::types::Message;
+use autohands_protocols::types::{Message, MessageRole};
 use parking_lot::RwLock;
 
 /// History for a single session.
@@ -38,17 +38,48 @@ impl ConversationHistory {
     pub fn clear(&mut self) {
         self.messages.clear();
     }
+
+    /// Remove the oldest `count` non-System messages from the history.
+    ///
+    /// System messages are always preserved to maintain context integrity.
+    pub fn trim_oldest(&mut self, count: usize) {
+        let mut removed = 0;
+        self.messages.retain(|msg| {
+            if removed >= count {
+                return true;
+            }
+            if msg.role == MessageRole::System {
+                return true; // Always preserve System messages
+            }
+            removed += 1;
+            false
+        });
+    }
 }
+
+/// Default maximum messages per session before oldest messages are trimmed.
+const DEFAULT_MAX_MESSAGES_PER_SESSION: usize = 200;
 
 /// History manager for multiple sessions.
 pub struct HistoryManager {
     histories: Arc<RwLock<HashMap<String, ConversationHistory>>>,
+    /// Maximum messages per session. Older messages are dropped when exceeded.
+    max_messages_per_session: usize,
 }
 
 impl HistoryManager {
     pub fn new() -> Self {
         Self {
             histories: Arc::new(RwLock::new(HashMap::new())),
+            max_messages_per_session: DEFAULT_MAX_MESSAGES_PER_SESSION,
+        }
+    }
+
+    /// Create a HistoryManager with a custom per-session message limit.
+    pub fn with_max_messages(max_messages: usize) -> Self {
+        Self {
+            histories: Arc::new(RwLock::new(HashMap::new())),
+            max_messages_per_session: max_messages,
         }
     }
 
@@ -62,12 +93,19 @@ impl HistoryManager {
     }
 
     /// Add a message to a session's history.
+    ///
+    /// If the session exceeds `max_messages_per_session`, the oldest messages
+    /// are dropped to stay within the limit.
     pub fn push(&self, session_id: &str, message: Message) {
         let mut histories = self.histories.write();
-        histories
-            .entry(session_id.to_string())
-            .or_default()
-            .push(message);
+        let history = histories.entry(session_id.to_string()).or_default();
+        history.push(message);
+
+        // Trim oldest messages when limit is exceeded
+        if history.len() > self.max_messages_per_session {
+            let excess = history.len() - self.max_messages_per_session;
+            history.trim_oldest(excess);
+        }
     }
 
     /// Clear history for a session.
@@ -75,6 +113,16 @@ impl HistoryManager {
         if let Some(history) = self.histories.write().get_mut(session_id) {
             history.clear();
         }
+    }
+
+    /// Remove a session's history entirely.
+    pub fn remove(&self, session_id: &str) {
+        self.histories.write().remove(session_id);
+    }
+
+    /// Get the number of tracked sessions.
+    pub fn session_count(&self) -> usize {
+        self.histories.read().len()
     }
 }
 

@@ -18,25 +18,7 @@
         assert!(result.errors.iter().any(|e| e.path == "server.port"));
     }
 
-    #[test]
-    fn test_validate_invalid_max_turns() {
-        let mut config = Config::default();
-        config.agent.max_turns = 0;
-
-        let result = ConfigValidator::validate(&config).unwrap();
-        assert!(!result.is_valid());
-        assert!(result.errors.iter().any(|e| e.path == "agent.max_turns"));
-    }
-
-    #[test]
-    fn test_validate_high_max_turns_warning() {
-        let mut config = Config::default();
-        config.agent.max_turns = 5000;
-
-        let result = ConfigValidator::validate(&config).unwrap();
-        assert!(result.is_valid());
-        assert!(!result.warnings.is_empty());
-    }
+    // max_turns and timeout_seconds are no longer enforced — agents run indefinitely.
 
     #[test]
     fn test_validate_invalid_base_url() {
@@ -146,15 +128,7 @@
         assert!(result.errors.iter().any(|e| e.path == "agent.default"));
     }
 
-    #[test]
-    fn test_validate_zero_timeout() {
-        let mut config = Config::default();
-        config.agent.timeout_seconds = 0;
-
-        let result = ConfigValidator::validate(&config).unwrap();
-        assert!(!result.is_valid());
-        assert!(result.errors.iter().any(|e| e.path == "agent.timeout_seconds"));
-    }
+    // timeout_seconds validation removed — agents have no timeout limit.
 
     #[test]
     fn test_validate_provider_without_api_key() {
@@ -231,7 +205,7 @@
         let mut config = Config::default();
         config.server.port = 0;
         config.server.host = String::new();
-        config.agent.max_turns = 0;
+        config.agent.default = String::new();
 
         let result = ConfigValidator::validate(&config).unwrap();
         assert!(!result.is_valid());

@@ -1,6 +1,11 @@
 //! RunLoop task dispatch and processing logic.
 
+use std::panic::AssertUnwindSafe;
+use std::sync::Arc;
+
 use chrono::{Duration as ChronoDuration, Utc};
+use cron::Schedule;
+use futures::FutureExt;
 use tracing::{debug, error, info, warn};
 
 use autohands_protocols::channel::OutboundMessage;
@@ -13,10 +18,9 @@ use crate::task::{Task, TaskSource};
 impl RunLoop {
     /// Process a task using the configured handler.
     ///
-    /// This is the core task processing logic:
-    /// 1. Check if handler is configured
-    /// 2. Execute the task via handler
-    /// 3. Send response back via channel if reply_to is set
+    /// Agent-class long-running tasks (`agent:*`, `trigger:*`, unknown fallback)
+    /// are dispatched via `tokio::spawn` so they do not block the RunLoop event
+    /// loop. Timer and system tasks are handled synchronously (they are cheap).
     pub(crate) async fn process_task(&self, task: Task) -> RunLoopResult<()> {
         let handler_guard = self.handler.read().await;
         let handler = match handler_guard.as_ref() {
@@ -28,40 +32,8 @@ impl RunLoop {
         };
         drop(handler_guard); // Release lock before async operation
 
-        // Create an injector with direct queue access
-        // Follow-up tasks from AgentResult.tasks will be enqueued after processing
-        let injector = AgentTaskInjector::with_queue(self.task_queue.clone());
-
         // Route task to appropriate handler method based on task type
-        let result = match task.task_type.as_str() {
-            "agent:execute" => {
-                info!(
-                    "Executing agent task: task_id={}, correlation_id={:?}",
-                    task.id, task.correlation_id
-                );
-                handler.handle_execute(&task, &injector).await
-            }
-            "agent:subtask" => {
-                debug!(
-                    "Executing subtask: task_id={}, correlation_id={:?}",
-                    task.id, task.correlation_id
-                );
-                handler.handle_subtask(&task, &injector).await
-            }
-            "agent:delayed" => {
-                debug!(
-                    "Executing delayed task: task_id={}, correlation_id={:?}",
-                    task.id, task.correlation_id
-                );
-                handler.handle_delayed(&task, &injector).await
-            }
-            t if t.starts_with("trigger:") => {
-                info!(
-                    "Executing trigger task as agent execution: task_id={}, type={}",
-                    task.id, task.task_type
-                );
-                handler.handle_execute(&task, &injector).await
-            }
+        match task.task_type.as_str() {
             t if t.starts_with("timer:") || t.starts_with("system:") => {
                 debug!(
                     "Processing timer/system task: task_id={}, type={}",
@@ -73,47 +45,116 @@ impl RunLoop {
                 {
                     self.reschedule_repeating_timer(&task).await?;
                 }
-                return Ok(());
+                Ok(())
             }
-            _ => {
-                warn!(
-                    "Unknown task type: {}, attempting handle_execute as fallback",
-                    task.task_type
+            t if t.starts_with("cron:") => {
+                debug!(
+                    "Processing cron task: task_id={}, type={}",
+                    task.id, task.task_type
                 );
-                handler.handle_execute(&task, &injector).await
+                // Reschedule the next cron occurrence
+                self.reschedule_cron_timer(&task).await?;
+                Ok(())
             }
-        };
-
-        match result {
-            Ok(agent_result) => {
-                self.handle_agent_result(&task, agent_result).await
-            }
-            Err(e) => {
-                error!("Task execution failed: task_id={}, error={}", task.id, e);
-                Err(e)
+            // Agent-class tasks: spawn into background to avoid blocking the RunLoop
+            _ => {
+                self.spawn_agent_task(handler, task);
+                Ok(())
             }
         }
     }
 
-    /// Handle a successful agent result: inject follow-up tasks, send response.
-    async fn handle_agent_result(
+    /// Spawn an agent-class task in the background via `tokio::spawn`.
+    ///
+    /// The RunLoop event loop continues processing timers, sources, and new tasks
+    /// while the agent executes (which can take minutes).
+    fn spawn_agent_task(
         &self,
+        handler: Arc<dyn crate::agent_driver::AgentEventHandler>,
+        task: Task,
+    ) {
+        let task_queue = self.task_queue.clone();
+        // Clone the Arc<RwLock<...>> so we can read().await inside the spawn closure
+        let channel_registry_lock = self.channel_registry.clone();
+
+        let task_id = task.id;
+        let task_type = task.task_type.clone();
+
+        info!(
+            "Spawning agent task: task_id={}, type={}, correlation_id={:?}",
+            task_id, task_type, task.correlation_id
+        );
+
+        tokio::spawn(async move {
+            let result = AssertUnwindSafe(async {
+                // Acquire channel registry inside the spawn to guarantee read access
+                let channel_registry = channel_registry_lock.read().await.clone();
+
+                // Create an injector with direct queue access
+                let injector = AgentTaskInjector::with_queue(task_queue.clone());
+
+                let result = match task.task_type.as_str() {
+                    "agent:execute" => handler.handle_execute(&task, &injector).await,
+                    "agent:subtask" => handler.handle_subtask(&task, &injector).await,
+                    "agent:delayed" => handler.handle_delayed(&task, &injector).await,
+                    t if t.starts_with("trigger:") => handler.handle_execute(&task, &injector).await,
+                    _ => {
+                        warn!(
+                            "Unknown task type: {}, attempting handle_execute as fallback",
+                            task.task_type
+                        );
+                        handler.handle_execute(&task, &injector).await
+                    }
+                };
+
+                match result {
+                    Ok(agent_result) => {
+                        if let Err(e) =
+                            Self::handle_agent_result_static(&task, agent_result, &task_queue, channel_registry.as_ref()).await
+                        {
+                            error!("Failed to handle agent result: task_id={}, error={}", task_id, e);
+                        }
+                    }
+                    Err(e) => {
+                        error!("Task execution failed: task_id={}, error={}", task_id, e);
+                    }
+                }
+            })
+            .catch_unwind()
+            .await;
+
+            if let Err(panic_info) = result {
+                let msg = panic_info
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| panic_info.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unknown panic".to_string());
+                error!("Agent task panicked: task_id={}, panic={}", task_id, msg);
+            }
+        });
+    }
+
+    /// Handle a successful agent result (static version for use inside `tokio::spawn`).
+    ///
+    /// Injects follow-up tasks, sends response via channel, and resets the task chain.
+    async fn handle_agent_result_static(
         task: &Task,
         agent_result: crate::agent_driver::AgentResult,
+        task_queue: &Arc<crate::task_queue::TaskQueue>,
+        channel_registry: Option<&Arc<autohands_core::registry::ChannelRegistry>>,
     ) -> RunLoopResult<()> {
         // Inject follow-up tasks
         if !agent_result.tasks.is_empty() {
             info!("Injecting {} follow-up tasks", agent_result.tasks.len());
             for follow_up in agent_result.tasks {
-                self.task_queue.enqueue(follow_up).await?;
+                task_queue.enqueue(follow_up).await?;
             }
         }
 
         // Send response back via channel if reply_to is set
         if let Some(ref reply_to) = task.reply_to {
             if let Some(ref response) = agent_result.response {
-                let channel_guard = self.channel_registry.read().await;
-                if let Some(ref registry) = *channel_guard {
+                if let Some(registry) = channel_registry {
                     let outbound = OutboundMessage::text(response);
                     match registry.send(reply_to, outbound).await {
                         Ok(_) => {
@@ -133,6 +174,12 @@ impl RunLoop {
                     warn!("No channel registry configured, cannot send response");
                 }
             }
+        }
+
+        // Reset task chain when the task completes (#7A)
+        if let Some(ref correlation_id) = task.correlation_id {
+            task_queue.chain_tracker().reset_chain(correlation_id);
+            debug!("Task chain reset: correlation_id={}", correlation_id);
         }
 
         if agent_result.is_complete {
@@ -172,6 +219,63 @@ impl RunLoop {
         info!(
             "Rescheduling repeating timer: type={}, interval={}ms, next_at={}",
             task.task_type, interval_ms, next_scheduled
+        );
+
+        self.task_queue.enqueue(new_task).await?;
+        Ok(())
+    }
+
+    /// Reschedule a cron timer task.
+    ///
+    /// Reads `cron_timer_expr` from the task's metadata, computes the next
+    /// fire time via `cron::Schedule`, and enqueues a new task at that time.
+    async fn reschedule_cron_timer(&self, task: &Task) -> RunLoopResult<()> {
+        let cron_expr = match task
+            .metadata
+            .get("cron_timer_expr")
+            .and_then(|v| v.as_str())
+        {
+            Some(expr) => expr.to_string(),
+            None => {
+                warn!(
+                    "Cron task {} has no cron_timer_expr in metadata, skipping reschedule",
+                    task.id
+                );
+                return Ok(());
+            }
+        };
+
+        let schedule: Schedule = match cron_expr.parse() {
+            Ok(s) => s,
+            Err(e) => {
+                error!(
+                    "Failed to parse cron expression '{}' for task {}: {}",
+                    cron_expr, task.id, e
+                );
+                return Ok(());
+            }
+        };
+
+        let next_time = match schedule.upcoming(Utc).next() {
+            Some(t) => t,
+            None => {
+                debug!("Cron schedule '{}' has no upcoming times", cron_expr);
+                return Ok(());
+            }
+        };
+
+        let mut new_task = Task::new(task.task_type.clone(), task.payload.clone())
+            .with_source(TaskSource::Scheduler)
+            .with_scheduled_at(next_time);
+
+        // Copy over cron metadata to the new task
+        for (key, value) in &task.metadata {
+            new_task.metadata.insert(key.clone(), value.clone());
+        }
+
+        info!(
+            "Rescheduling cron timer: type={}, expr='{}', next_at={}",
+            task.task_type, cron_expr, next_time
         );
 
         self.task_queue.enqueue(new_task).await?;

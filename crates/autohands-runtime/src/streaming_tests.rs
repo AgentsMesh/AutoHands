@@ -540,8 +540,6 @@
         let provider_registry = Arc::new(ProviderRegistry::new());
         let tool_registry = Arc::new(ToolRegistry::new());
         let config = AgentLoopConfig {
-            max_turns: 10,
-            timeout_seconds: 60,
             checkpoint_enabled: false,
             ..Default::default()
         };

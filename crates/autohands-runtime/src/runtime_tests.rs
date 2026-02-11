@@ -157,14 +157,12 @@ fn test_runtime_config_custom() {
     let config = AgentRuntimeConfig {
         max_concurrent: 5,
         default_loop_config: AgentLoopConfig {
-            max_turns: 10,
-            timeout_seconds: 60,
             checkpoint_enabled: false,
-            ..Default::default()
+            max_tool_output_chars: 50_000,
         },
     };
     assert_eq!(config.max_concurrent, 5);
-    assert_eq!(config.default_loop_config.max_turns, 10);
+    assert!(!config.default_loop_config.checkpoint_enabled);
 }
 
 #[test]

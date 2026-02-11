@@ -101,28 +101,9 @@ impl ConfigValidator {
     }
 
     fn validate_agent(config: &Config, result: &mut ValidationResult) {
-        // Validate max_turns
-        if config.agent.max_turns == 0 {
-            result.add_error(ValidationError::new(
-                "agent.max_turns",
-                "max_turns must be greater than 0",
-            ));
-        }
-
-        if config.agent.max_turns > 1000 {
-            result.add_warning(ValidationWarning::new(
-                "agent.max_turns",
-                "max_turns is very high (>1000), this may lead to long-running agents",
-            ));
-        }
-
-        // Validate timeout
-        if config.agent.timeout_seconds == 0 {
-            result.add_error(ValidationError::new(
-                "agent.timeout_seconds",
-                "timeout_seconds must be greater than 0",
-            ));
-        }
+        // Note: max_turns and timeout_seconds are no longer enforced at the agent loop level.
+        // Agents run indefinitely until they complete or are explicitly aborted, supporting
+        // 7×24 autonomous long-running tasks.
 
         // Validate default agent
         if config.agent.default.is_empty() {

@@ -108,21 +108,16 @@ impl CheckpointSupport for MockCheckpointSupport {
 #[test]
 fn test_agent_loop_config_default() {
     let config = AgentLoopConfig::default();
-    assert_eq!(config.max_turns, 50);
-    assert_eq!(config.timeout_seconds, 300);
     assert!(!config.checkpoint_enabled);
+    assert_eq!(config.max_tool_output_chars, 100_000);
 }
 
 #[test]
 fn test_agent_loop_config_custom() {
     let config = AgentLoopConfig {
-        max_turns: 100,
-        timeout_seconds: 600,
         checkpoint_enabled: true,
         ..Default::default()
     };
-    assert_eq!(config.max_turns, 100);
-    assert_eq!(config.timeout_seconds, 600);
     assert!(config.checkpoint_enabled);
 }
 
@@ -136,17 +131,15 @@ fn test_agent_loop_config_with_checkpoint() {
 fn test_agent_loop_config_clone() {
     let config = AgentLoopConfig::default();
     let cloned = config.clone();
-    assert_eq!(cloned.max_turns, config.max_turns);
-    assert_eq!(cloned.timeout_seconds, config.timeout_seconds);
     assert_eq!(cloned.checkpoint_enabled, config.checkpoint_enabled);
+    assert_eq!(cloned.max_tool_output_chars, config.max_tool_output_chars);
 }
 
 #[test]
 fn test_agent_loop_config_debug() {
     let config = AgentLoopConfig::default();
     let debug_str = format!("{:?}", config);
-    assert!(debug_str.contains("max_turns"));
-    assert!(debug_str.contains("50"));
+    assert!(debug_str.contains("checkpoint_enabled"));
 }
 
 #[test]
@@ -163,45 +156,11 @@ fn test_agent_loop_with_custom_config() {
     let provider_registry = Arc::new(ProviderRegistry::new());
     let tool_registry = Arc::new(ToolRegistry::new());
     let config = AgentLoopConfig {
-        max_turns: 10,
-        timeout_seconds: 60,
         checkpoint_enabled: false,
-        ..Default::default()
+        max_tool_output_chars: 50_000,
     };
 
     let _loop = AgentLoop::new(provider_registry, tool_registry, config);
-}
-
-#[test]
-fn test_agent_loop_config_min_values() {
-    let config = AgentLoopConfig {
-        max_turns: 1,
-        timeout_seconds: 1,
-        checkpoint_enabled: false,
-        ..Default::default()
-    };
-    assert_eq!(config.max_turns, 1);
-    assert_eq!(config.timeout_seconds, 1);
-}
-
-#[test]
-fn test_agent_loop_config_max_values() {
-    let config = AgentLoopConfig {
-        max_turns: u32::MAX,
-        timeout_seconds: u64::MAX,
-        checkpoint_enabled: true,
-        ..Default::default()
-    };
-    assert_eq!(config.max_turns, u32::MAX);
-    assert_eq!(config.timeout_seconds, u64::MAX);
-}
-
-#[test]
-fn test_agent_loop_config_debug_contains_timeout() {
-    let config = AgentLoopConfig::default();
-    let debug_str = format!("{:?}", config);
-    assert!(debug_str.contains("timeout_seconds"));
-    assert!(debug_str.contains("300"));
 }
 
 #[test]
@@ -211,7 +170,7 @@ fn test_agent_loop_with_empty_registries() {
     let config = AgentLoopConfig::default();
 
     let agent_loop = AgentLoop::new(provider_registry, tool_registry, config);
-    assert_eq!(agent_loop.config.max_turns, 50);
+    assert!(!agent_loop.config.checkpoint_enabled);
 }
 
 #[tokio::test]
@@ -254,26 +213,6 @@ async fn test_agent_loop_run_aborted() {
 
     let result = agent_loop.run(&agent, ctx, message).await;
     assert!(matches!(result, Err(AgentError::Aborted)));
-}
-
-#[tokio::test]
-async fn test_agent_loop_run_max_turns_exceeded() {
-    let provider_registry = Arc::new(ProviderRegistry::new());
-    let tool_registry = Arc::new(ToolRegistry::new());
-    let config = AgentLoopConfig {
-        max_turns: 1,
-        timeout_seconds: 60,
-        checkpoint_enabled: false,
-        ..Default::default()
-    };
-    let agent_loop = AgentLoop::new(provider_registry, tool_registry, config);
-
-    let agent = MockAgent::new(false); // Won't complete
-    let ctx = AgentContext::new("test-session").with_history(Vec::new());
-    let message = Message::user("Hello");
-
-    let result = agent_loop.run(&agent, ctx, message).await;
-    assert!(matches!(result, Err(AgentError::MaxTurnsExceeded(_))));
 }
 
 #[tokio::test]
@@ -537,35 +476,6 @@ async fn test_memory_flush_on_session_complete() {
     assert!(summary_entry.is_some(), "Expected a session summary entry");
     assert!(summary_entry.unwrap().tags.contains(&"session-summary".to_string()));
     assert!(summary_entry.unwrap().content.contains("Session conversation summary"));
-}
-
-#[tokio::test]
-async fn test_memory_flush_on_max_turns() {
-    let provider_registry = Arc::new(ProviderRegistry::new());
-    let tool_registry = Arc::new(ToolRegistry::new());
-    let config = AgentLoopConfig {
-        max_turns: 1,
-        timeout_seconds: 60,
-        checkpoint_enabled: false,
-        ..Default::default()
-    };
-
-    let memory = Arc::new(MockMemoryBackend::new());
-    let agent_loop = AgentLoop::new(provider_registry, tool_registry, config)
-        .with_memory(memory.clone());
-
-    let agent = MockAgent::new(false); // won't complete -> triggers max_turns
-    let ctx = AgentContext::new("test-session").with_history(Vec::new());
-    let message = Message::user("I decided to use PostgreSQL for the database");
-
-    let result = agent_loop.run(&agent, ctx, message).await;
-    assert!(matches!(result, Err(AgentError::MaxTurnsExceeded(_))));
-
-    let entries = memory.stored_entries().await;
-    // Should have flushed the decision entry with session-end-flush tag
-    let decision_entry = entries.iter().find(|e| e.memory_type == "decision");
-    assert!(decision_entry.is_some(), "Expected a decision entry on max_turns flush");
-    assert!(decision_entry.unwrap().tags.contains(&"session-end-flush".to_string()));
 }
 
 #[tokio::test]

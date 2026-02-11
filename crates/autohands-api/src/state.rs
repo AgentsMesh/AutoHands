@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use tokio::sync::Notify;
+
 use autohands_core::registry::{ProviderRegistry, ToolRegistry};
 use autohands_core::Kernel;
 use autohands_runtime::{AgentLoopConfig, AgentRuntime, AgentRuntimeConfig, Session, SessionManager, TranscriptManager};
@@ -20,6 +22,8 @@ pub struct AppState {
     start_time: Instant,
     request_count: AtomicU64,
     shutdown_requested: AtomicBool,
+    /// Notifier for API-triggered shutdown.
+    pub shutdown_notify: Arc<Notify>,
 }
 
 impl AppState {
@@ -40,6 +44,7 @@ impl AppState {
             start_time: Instant::now(),
             request_count: AtomicU64::new(0),
             shutdown_requested: AtomicBool::new(false),
+            shutdown_notify: Arc::new(Notify::new()),
         }
     }
 
@@ -58,9 +63,10 @@ impl AppState {
         self.request_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Request shutdown.
+    /// Request shutdown and notify the server signal handler.
     pub fn request_shutdown(&self) {
         self.shutdown_requested.store(true, Ordering::SeqCst);
+        self.shutdown_notify.notify_one();
     }
 
     /// Check if shutdown is requested.
@@ -107,6 +113,7 @@ impl Default for AppState {
             start_time: Instant::now(),
             request_count: AtomicU64::new(0),
             shutdown_requested: AtomicBool::new(false),
+            shutdown_notify: Arc::new(Notify::new()),
         }
     }
 }

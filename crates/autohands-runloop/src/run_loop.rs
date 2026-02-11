@@ -96,7 +96,10 @@ pub struct RunLoop {
     /// Agent event handler for processing tasks.
     pub(crate) handler: RwLock<Option<Arc<dyn AgentEventHandler>>>,
     /// Channel registry for sending responses.
-    pub(crate) channel_registry: RwLock<Option<Arc<ChannelRegistry>>>,
+    ///
+    /// Wrapped in Arc so it can be cheaply cloned into `tokio::spawn` closures
+    /// for reliable `.read().await` instead of fallible `try_read()`.
+    pub(crate) channel_registry: Arc<RwLock<Option<Arc<ChannelRegistry>>>>,
 }
 
 impl RunLoop {
@@ -123,7 +126,7 @@ impl RunLoop {
             metrics: Arc::new(RunLoopMetrics::new()),
             spawner_inner: Arc::new(SpawnerInner::new()),
             handler: RwLock::new(None),
-            channel_registry: RwLock::new(None),
+            channel_registry: Arc::new(RwLock::new(None)),
         };
 
         // Initialize default modes

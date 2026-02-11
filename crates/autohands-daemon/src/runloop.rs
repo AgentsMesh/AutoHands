@@ -93,8 +93,6 @@ impl RunLoopRunner {
         let runtime_config = AgentRuntimeConfig {
             max_concurrent: self.config.workers.max_workers,
             default_loop_config: AgentLoopConfig {
-                max_turns: 50,
-                timeout_seconds: 300,
                 checkpoint_enabled: false,
                 ..Default::default()
             },

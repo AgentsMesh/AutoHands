@@ -29,7 +29,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex};
 use tracing::{debug, info};
 
 use autohands_protocols::channel::{
@@ -104,10 +104,10 @@ pub struct WebChannel {
     capabilities: ChannelCapabilities,
     /// Shared state.
     state: Arc<WebChannelState>,
-    /// Server shutdown signal (kept for RAII drop behavior).
-    _shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
-    /// Server join handle (kept for RAII drop behavior).
-    _server_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Server shutdown signal (wrapped in Mutex for interior mutability via &self).
+    shutdown_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// Server join handle (wrapped in Mutex for interior mutability via &self).
+    server_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl WebChannel {
@@ -128,8 +128,8 @@ impl WebChannel {
                 max_message_length: Some(65536), // 64KB
             },
             state,
-            _shutdown_tx: None,
-            _server_handle: None,
+            shutdown_tx: Mutex::new(None),
+            server_handle: Mutex::new(None),
         }
     }
 
@@ -188,12 +188,20 @@ impl Channel for WebChannel {
         info!("Web channel started at http://{}", addr);
         self.state.started.store(true, Ordering::SeqCst);
 
-        // Spawn server task
-        tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, router).await {
+        // Create shutdown channel for graceful shutdown
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_handle = tokio::spawn(async move {
+            let shutdown_signal = async { shutdown_rx.await.ok(); };
+            if let Err(e) = axum::serve(listener, router)
+                .with_graceful_shutdown(shutdown_signal)
+                .await
+            {
                 tracing::error!("Web server error: {}", e);
             }
         });
+
+        *self.shutdown_tx.lock().await = Some(shutdown_tx);
+        *self.server_handle.lock().await = Some(server_handle);
 
         Ok(())
     }
@@ -204,6 +212,16 @@ impl Channel for WebChannel {
         }
 
         self.state.started.store(false, Ordering::SeqCst);
+
+        // Signal the server to shut down gracefully
+        if let Some(tx) = self.shutdown_tx.lock().await.take() {
+            let _ = tx.send(());
+        }
+
+        // Wait for the server task to finish
+        if let Some(handle) = self.server_handle.lock().await.take() {
+            let _ = handle.await;
+        }
 
         // Close all connections
         for entry in self.state.connections.iter() {

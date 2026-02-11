@@ -119,11 +119,11 @@ impl PidFile {
     /// Check if a process with the given PID is running.
     #[cfg(unix)]
     pub fn is_process_running(pid: u32) -> bool {
-        use nix::sys::signal::{kill, Signal};
+        use nix::sys::signal::kill;
         use nix::unistd::Pid;
 
-        // Send signal 0 to check if process exists
-        kill(Pid::from_raw(pid as i32), Some(Signal::SIGCONT))
+        // Send signal 0 (null signal) to check if process exists without side effects
+        kill(Pid::from_raw(pid as i32), None)
             .map(|_| true)
             .unwrap_or(false)
     }
