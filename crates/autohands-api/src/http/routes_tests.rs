@@ -13,7 +13,8 @@
         let base = Arc::new(AppState::default());
         let run_loop = Arc::new(RunLoop::new(RunLoopConfig::default()));
         let runloop = Arc::new(RunLoopState::from_runloop(run_loop));
-        let hybrid = Arc::new(HybridAppState::new(base, runloop));
+        let api_ws_channel = Arc::new(crate::websocket::ApiWsChannel::new());
+        let hybrid = Arc::new(HybridAppState::new(base, runloop, api_ws_channel));
         create_router_with_hybrid_state(hybrid)
     }
 
@@ -160,6 +161,7 @@
     #[tokio::test]
     async fn test_webhook_delete_endpoint() {
         let app = create_test_router();
+        // Deleting a non-existent webhook returns NOT_FOUND
         let response = app
             .oneshot(
                 Request::builder()
@@ -171,5 +173,5 @@
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }

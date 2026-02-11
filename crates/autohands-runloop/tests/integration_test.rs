@@ -11,11 +11,10 @@ use serde_json::json;
 use tokio::sync::mpsc;
 
 use autohands_runloop::{
-    AgentDriver, AgentEventHandler, AgentTaskInjector, AgentSource0, AgentResult,
+    AgentEventHandler, AgentTaskInjector, AgentSource0, AgentResult,
     TaskPriority, TaskQueue, TaskQueueConfig, TaskSource, HttpTaskInjector,
     RunLoop, RunLoopConfig, Task, RunLoopMode, RunLoopObserver, RunLoopPhase,
     RunLoopResult, RunLoopRunResult, Source0, TimerBuilder, WakeupSignal,
-    WebSocketSource1,
 };
 
 // ============================================================================
@@ -165,21 +164,14 @@ async fn test_runloop_lifecycle_with_observers() {
     assert_eq!(exit_count.load(Ordering::SeqCst), 1);
 }
 
-/// Test: AgentDriver processes events correctly.
+/// Test: RunLoop processes tasks via set_handler.
 #[tokio::test]
-async fn test_agent_driver_event_processing() {
+async fn test_runloop_handler_event_processing() {
     let run_loop = Arc::new(RunLoop::default());
-    let agent_source = Arc::new(AgentSource0::new("test-agent"));
-    let config = RunLoopConfig::default();
 
     // Create handler with counters
     let (handler, execute_count, subtask_count, delayed_count) = TestEventHandler::new();
-
-    let agent_driver = Arc::new(
-        AgentDriver::new(run_loop.clone(), agent_source.clone(), config)
-            .with_handler(Arc::new(handler)),
-    );
-    agent_driver.start();
+    run_loop.set_handler(Arc::new(handler)).await;
 
     // Inject test events
     let execute_event = Task::new("agent:execute", json!({"prompt": "test task"}))
@@ -194,20 +186,27 @@ async fn test_agent_driver_event_processing() {
         .with_source(TaskSource::Timer)
         .with_priority(TaskPriority::Low);
 
-    // Process events
-    agent_driver.process_task(execute_event).await.unwrap();
-    agent_driver.process_task(subtask_event).await.unwrap();
-    agent_driver.process_task(delayed_event).await.unwrap();
+    run_loop.inject_task(execute_event).await.unwrap();
+    run_loop.inject_task(subtask_event).await.unwrap();
+    run_loop.inject_task(delayed_event).await.unwrap();
 
-    // Wait for processing
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Stop after processing
+    let run_loop_clone = run_loop.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        run_loop_clone.stop();
+    });
+
+    // Run the loop to process tasks
+    run_loop
+        .run_in_mode(RunLoopMode::Default, Duration::from_secs(5))
+        .await
+        .unwrap();
 
     // Verify counts
     assert_eq!(execute_count.load(Ordering::SeqCst), 1);
     assert_eq!(subtask_count.load(Ordering::SeqCst), 1);
     assert_eq!(delayed_count.load(Ordering::SeqCst), 1);
-
-    agent_driver.stop();
 }
 
 /// Test: Event injection via AgentSource0 (self-driving).
@@ -291,28 +290,6 @@ async fn test_http_task_injector() {
     assert_eq!(event.payload["session_id"], "session-123");
     assert_eq!(event.payload["agent"], "coder");
     assert_eq!(event.source, TaskSource::User);
-}
-
-/// Test: WebSocketSource1 handles chat messages.
-#[tokio::test]
-async fn test_websocket_source1_chat() {
-    let ws_source = WebSocketSource1::new("test-ws");
-    let (receiver, sender) = ws_source.create_receiver();
-
-    // Send a chat message
-    sender
-        .send_chat(Some("sess-1".to_string()), "Hello from WebSocket", "conn-1")
-        .await
-        .unwrap();
-
-    // Receive and handle
-    let msg = receiver.receiver.lock().await.recv().await.unwrap();
-
-    // Verify message content
-    assert_eq!(msg.payload["type"], "chat");
-    assert_eq!(msg.payload["content"], "Hello from WebSocket");
-    assert_eq!(msg.payload["session_id"], "sess-1");
-    assert_eq!(msg.payload["connection_id"], "conn-1");
 }
 
 /// Test: Event priority ordering.
@@ -404,20 +381,14 @@ async fn test_event_chain_limiting() {
     assert!(result.is_err());
 }
 
-/// Test: Complete flow - HTTP injection to event processing.
+/// Test: Complete flow - HTTP injection to RunLoop processing.
 #[tokio::test]
 async fn test_complete_http_to_processing_flow() {
     let run_loop = Arc::new(RunLoop::default());
-    let agent_source = Arc::new(AgentSource0::new("flow-test"));
-    let config = RunLoopConfig::default();
 
-    // Set up event handler
+    // Set up event handler via RunLoop
     let (handler, execute_count, _, _) = TestEventHandler::new();
-    let agent_driver = Arc::new(
-        AgentDriver::new(run_loop.clone(), agent_source.clone(), config)
-            .with_handler(Arc::new(handler)),
-    );
-    agent_driver.start();
+    run_loop.set_handler(Arc::new(handler)).await;
 
     // Create HTTP injector
     let injector =
@@ -432,17 +403,20 @@ async fn test_complete_http_to_processing_flow() {
     // Verify event is in queue
     assert_eq!(run_loop.pending_task_count().await, 1);
 
-    // Process the event through agent driver
-    let event = run_loop.task_queue().dequeue().await.unwrap();
-    agent_driver.process_task(event).await.unwrap();
+    // Run loop briefly to process the task
+    let run_loop_clone = run_loop.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        run_loop_clone.stop();
+    });
 
-    // Wait for processing
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    run_loop
+        .run_in_mode(RunLoopMode::Default, Duration::from_secs(5))
+        .await
+        .unwrap();
 
     // Verify execution
     assert_eq!(execute_count.load(Ordering::SeqCst), 1);
-
-    agent_driver.stop();
 }
 
 /// Test: Multiple modes isolation.

@@ -1,4 +1,5 @@
 use super::*;
+use std::path::PathBuf;
 use tempfile::TempDir;
 
 #[tokio::test]
@@ -104,18 +105,18 @@ fn test_delete_file_params_with_recursive() {
     assert!(params.recursive);
 }
 
-#[test]
-fn test_resolve_path_absolute() {
-    let work_dir = PathBuf::from("/home/user");
-    let resolved = resolve_path("/absolute/path", &work_dir);
-    assert_eq!(resolved, PathBuf::from("/absolute/path"));
-}
-
-#[test]
-fn test_resolve_path_relative() {
-    let work_dir = PathBuf::from("/home/user");
-    let resolved = resolve_path("relative/path", &work_dir);
-    assert_eq!(resolved, PathBuf::from("/home/user/relative/path"));
+#[tokio::test]
+async fn test_delete_file_path_traversal_denied() {
+    let temp_dir = TempDir::new().unwrap();
+    let tool = DeleteFileTool::new();
+    let ctx = ToolContext::new("test", temp_dir.path().to_path_buf());
+    let params = serde_json::json!({
+        "path": "../../../etc/important_file"
+    });
+    let result = tool.execute(params, ctx).await;
+    assert!(result.is_err());
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(err_msg.contains("Path traversal denied"));
 }
 
 #[tokio::test]

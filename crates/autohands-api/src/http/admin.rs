@@ -1,5 +1,4 @@
 //! Admin management endpoints.
-#![allow(dead_code)]
 
 use axum::{
     extract::{Path, State},
@@ -182,19 +181,28 @@ fn get_memory_usage() -> Option<u64> {
 /// Reload configuration request.
 #[derive(Debug, Deserialize)]
 pub struct ReloadConfigRequest {
+    /// Optional path to the configuration file to reload from.
     #[serde(default)]
     pub config_path: Option<String>,
+}
+
+impl ReloadConfigRequest {
+    /// Returns the config path if specified, or None for default.
+    pub fn path(&self) -> Option<&str> {
+        self.config_path.as_deref()
+    }
 }
 
 /// Reload configuration.
 pub async fn reload_config(
     State(_state): State<Arc<AppState>>,
-    Json(_request): Json<ReloadConfigRequest>,
+    Json(request): Json<ReloadConfigRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
     // TODO: Implement actual config reload
+    let path_info = request.path().unwrap_or("default");
     Ok(Json(serde_json::json!({
         "status": "ok",
-        "message": "Configuration reload requested"
+        "message": format!("Configuration reload requested from: {}", path_info)
     })))
 }
 

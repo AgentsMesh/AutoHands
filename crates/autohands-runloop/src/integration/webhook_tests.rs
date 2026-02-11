@@ -56,28 +56,28 @@
         assert!(trigger.verify_secret(Some("anything")));
     }
 
-    // Source1 tests
-    #[tokio::test]
-    async fn test_webhook_source1() {
-        let source = WebhookSource1::new("webhook");
-        assert_eq!(source.id(), "webhook");
-        assert!(source.is_valid());
-    }
-
-    #[tokio::test]
-    async fn test_webhook_source1_handle() {
-        let source = WebhookSource1::new("webhook");
-
-        let msg = WebhookSource1::create_message(WebhookEvent {
+    #[test]
+    fn test_webhook_event_creation() {
+        let event = WebhookEvent {
             webhook_id: "hook-1".to_string(),
             method: "POST".to_string(),
             path: "/api/webhook".to_string(),
             body: json!({"key": "value"}),
             agent: Some("general".to_string()),
             prompt: None,
-        });
+        };
 
-        let events = source.handle(msg).await.unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].task_type, "trigger:webhook:received");
+        assert_eq!(event.webhook_id, "hook-1");
+        assert_eq!(event.method, "POST");
+        assert_eq!(event.body["key"], "value");
+    }
+
+    #[test]
+    fn test_webhook_injector_creation() {
+        use crate::RunLoopConfig;
+        // RunLoop implements TaskSubmitter
+        let run_loop: Arc<dyn TaskSubmitter> = Arc::new(crate::RunLoop::new(RunLoopConfig::default()));
+        let injector = WebhookInjector::new(run_loop);
+        // Injector created successfully - no panics
+        let _ = injector;
     }

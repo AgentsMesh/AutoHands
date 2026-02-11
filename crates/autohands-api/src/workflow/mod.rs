@@ -5,11 +5,14 @@
 //! - Workflow execution with timeout support
 //! - Step result tracking
 //! - Task-driven coordination with RunLoop
+//! - HTTP API routes for workflow management
 
 mod definition;
 mod executor;
 mod executor_types;
 mod mock_executor;
+pub mod routes;
+pub mod store;
 mod workflow_composite;
 mod workflow_steps;
 
@@ -19,3 +22,4 @@ pub use executor_types::{
     AgentExecutor, ConditionEvaluator, ExecutionContext, SimpleConditionEvaluator, StepResult,
 };
 pub use mock_executor::MockAgentExecutor;
+pub use store::{MemoryWorkflowStore, WorkflowStore};

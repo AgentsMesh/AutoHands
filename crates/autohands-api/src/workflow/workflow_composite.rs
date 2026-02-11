@@ -1,5 +1,6 @@
 //! Composite workflow step implementations (parallel, sequential, conditional).
 
+use futures::future::join_all;
 use tracing::{debug, info};
 
 use crate::error::InterfaceError;
@@ -9,7 +10,11 @@ use super::executor::WorkflowExecutor;
 use super::executor_types::{ExecutionContext, StepResult};
 
 impl WorkflowExecutor {
-    /// Execute parallel steps.
+    /// Execute parallel steps with actual concurrency via `join_all`.
+    ///
+    /// Each step receives an independent clone of the initial context,
+    /// and all steps execute concurrently. Results are merged back into
+    /// the parent context after all steps complete.
     pub(crate) async fn execute_parallel_steps(
         &self,
         step_id: &str,
@@ -18,15 +23,30 @@ impl WorkflowExecutor {
     ) -> Result<StepResult, InterfaceError> {
         info!("Executing {} parallel steps in {}", steps.len(), step_id);
 
+        let initial_context = context.clone();
+
+        // Create futures for all steps, each with an independent context clone
+        let futures: Vec<_> = steps
+            .iter()
+            .map(|step| {
+                let mut step_context = initial_context.clone();
+                async move {
+                    let result = self.execute_step(step, &mut step_context).await;
+                    (result, step_context)
+                }
+            })
+            .collect();
+
+        // Execute all steps concurrently
+        let results = join_all(futures).await;
+
+        // Merge results
         let mut outputs = Vec::new();
         let mut all_success = true;
         let mut errors = Vec::new();
 
-        let initial_context = context.clone();
-
-        for step in steps {
-            let mut step_context = initial_context.clone();
-            match self.execute_step(step, &mut step_context).await {
+        for (result, step_context) in results {
+            match result {
                 Ok(step_result) => {
                     if !step_result.success {
                         all_success = false;

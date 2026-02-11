@@ -138,7 +138,7 @@ impl SkillAdapter for AutoHandsAdapter {
             SkillError::ParsingError("Missing YAML frontmatter".to_string())
         })?;
 
-        let fm: AutoHandsFrontmatter = serde_yaml::from_str(&frontmatter_str)
+        let fm: AutoHandsFrontmatter = serde_yml::from_str(&frontmatter_str)
             .map_err(|e| SkillError::ParsingError(format!("Invalid frontmatter: {}", e)))?;
 
         let mut def = SkillDefinition::new(&fm.id, &fm.name).with_description(&fm.description);

@@ -37,6 +37,7 @@ impl TaskChainTracker {
         let current = count.fetch_add(1, AtomicOrdering::SeqCst);
 
         if current >= self.max_tasks_per_chain {
+            count.fetch_sub(1, AtomicOrdering::SeqCst);
             warn!(
                 "Task chain {} exceeded limit ({})",
                 correlation_id, current

@@ -50,6 +50,7 @@ impl Default for RunLoopConfig {
 }
 
 /// Worker pool configuration.
+// TODO: Worker pool not yet implemented, currently single-threaded
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerPoolConfig {
     /// Maximum number of concurrent workers.

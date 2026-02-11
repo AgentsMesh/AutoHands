@@ -87,7 +87,7 @@ impl SkillAdapter for ClaudeCodeAdapter {
             SkillError::ParsingError("Missing YAML frontmatter".to_string())
         })?;
 
-        let fm: ClaudeCodeFrontmatter = serde_yaml::from_str(&frontmatter_str)
+        let fm: ClaudeCodeFrontmatter = serde_yml::from_str(&frontmatter_str)
             .map_err(|e| SkillError::ParsingError(format!("Invalid frontmatter: {}", e)))?;
 
         // Derive ID from name

@@ -2,11 +2,12 @@
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use std::path::PathBuf;
 
 use autohands_protocols::error::ToolError;
 use autohands_protocols::tool::{Tool, ToolContext, ToolDefinition, ToolResult};
 use autohands_protocols::types::RiskLevel;
+
+use super::resolve_path_safe;
 
 /// Parameters for read_file tool.
 #[derive(Debug, Deserialize)]
@@ -75,7 +76,7 @@ impl Tool for ReadFileTool {
         let params: ReadFileParams = serde_json::from_value(params)
             .map_err(|e| ToolError::InvalidParameters(e.to_string()))?;
 
-        let path = resolve_path(&params.path, &ctx.work_dir);
+        let path = resolve_path_safe(&params.path, &ctx.work_dir)?;
 
         if !path.exists() {
             return Err(ToolError::ResourceNotFound(format!(
@@ -100,15 +101,6 @@ impl Tool for ReadFileTool {
             .collect();
 
         Ok(ToolResult::success(selected.join("\n")))
-    }
-}
-
-fn resolve_path(path: &str, work_dir: &PathBuf) -> PathBuf {
-    let p = PathBuf::from(path);
-    if p.is_absolute() {
-        p
-    } else {
-        work_dir.join(p)
     }
 }
 

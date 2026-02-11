@@ -152,7 +152,7 @@ impl Extension for ArkExtension {
         Ok(())
     }
 
-    async fn shutdown(&mut self) -> Result<(), ExtensionError> {
+    async fn shutdown(&self) -> Result<(), ExtensionError> {
         info!("Ark provider shutting down");
         Ok(())
     }

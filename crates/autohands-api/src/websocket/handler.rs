@@ -113,13 +113,19 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
 
 /// Handle a WebSocket connection with RunLoop integration.
 ///
-/// **P0 FIX**: This function properly converts Chat messages to RunLoop events.
+/// **P0 FIX**: This function properly converts Chat messages to RunLoop events
+/// and registers the connection with ApiWsChannel for response routing.
 async fn handle_socket_with_runloop(socket: WebSocket, state: Arc<HybridAppState>) {
     let connection_id = Uuid::new_v4().to_string();
     info!("WebSocket connected (RunLoop mode): {}", connection_id);
 
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<WsMessage>(100);
+
+    // Register connection with ApiWsChannel for RunLoop response routing
+    state
+        .api_ws_channel
+        .register_connection(connection_id.clone(), tx.clone());
 
     // Send connected message
     let connected = WsMessage::Connected {
@@ -176,7 +182,8 @@ async fn handle_socket_with_runloop(socket: WebSocket, state: Arc<HybridAppState
         }
     }
 
-    // Cleanup
+    // Cleanup: unregister from ApiWsChannel
+    state.api_ws_channel.unregister_connection(&connection_id);
     sender_task.abort();
     info!("WebSocket disconnected: {}", connection_id);
 }
@@ -258,6 +265,7 @@ async fn handle_message_direct(
 /// Handle a parsed WebSocket message with RunLoop integration.
 ///
 /// **P0 FIX**: Chat messages are converted to RunLoop events and injected into the event queue.
+/// A `ReplyAddress` is attached so the RunLoop routes the response back through ApiWsChannel.
 async fn handle_message_with_runloop(
     msg: WsMessage,
     tx: &tokio::sync::mpsc::Sender<WsMessage>,
@@ -285,22 +293,40 @@ async fn handle_message_with_runloop(
                 "agent_id": "general",
             });
 
-            // Inject event into RunLoop
+            // Construct ReplyAddress so the RunLoop can route the response
+            // back through the ApiWsChannel to this specific WebSocket connection.
+            // Use thread_id to carry the session_id for response correlation.
+            let reply_to = autohands_protocols::channel::ReplyAddress::with_thread(
+                "api-ws",
+                connection_id,
+                &session,
+            );
+
+            // Inject event into RunLoop with reply_to
             let runloop_state = state.runloop_state();
-            match runloop_state.submit_task("agent:execute", payload).await {
+            match runloop_state
+                .submit_task("agent:execute", payload, Some(reply_to))
+                .await
+            {
                 Ok(()) => {
                     info!("Chat message injected into RunLoop: session={}", session);
 
                     // Send acknowledgment that execution has started
-                    tx.send(WsMessage::execution_started(session.clone(), Some("general".to_string())))
-                        .await
-                        .map_err(|e| e.to_string())?;
+                    tx.send(WsMessage::execution_started(
+                        session.clone(),
+                        Some("general".to_string()),
+                    ))
+                    .await
+                    .map_err(|e| e.to_string())?;
                 }
                 Err(e) => {
                     error!("Failed to inject event into RunLoop: {}", e);
-                    tx.send(WsMessage::error("RUNLOOP_ERROR", format!("Failed to queue task: {}", e)))
-                        .await
-                        .map_err(|e| e.to_string())?;
+                    tx.send(WsMessage::error(
+                        "RUNLOOP_ERROR",
+                        format!("Failed to queue task: {}", e),
+                    ))
+                    .await
+                    .map_err(|e| e.to_string())?;
                 }
             }
         }

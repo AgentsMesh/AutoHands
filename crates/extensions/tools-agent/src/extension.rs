@@ -127,7 +127,7 @@ impl Extension for AgentToolsExtension {
         Ok(())
     }
 
-    async fn shutdown(&mut self) -> Result<(), ExtensionError> {
+    async fn shutdown(&self) -> Result<(), ExtensionError> {
         if let Some(ref manager) = self.manager {
             // Terminate all running agents
             for agent in manager.list() {

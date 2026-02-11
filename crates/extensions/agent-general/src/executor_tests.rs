@@ -205,7 +205,9 @@ async fn test_execute_turn_with_tool_use() {
     let turn_result = result.unwrap();
     assert!(!turn_result.is_complete); // Tool use means not complete yet
     assert_eq!(turn_result.tool_calls.len(), 1);
-    assert_eq!(turn_result._tool_results.len(), 1);
+    // SingleTurnExecutor does NOT execute tools — tool_calls are returned
+    // for AgentLoop to execute, preventing double-execution.
+    assert_eq!(turn_result.tool_calls[0].name, "test_tool");
     assert!(matches!(turn_result._stop_reason, StopReason::ToolUse));
 }
 
@@ -338,7 +340,9 @@ async fn test_execute_turn_provider_error() {
 }
 
 #[tokio::test]
-async fn test_execute_turn_tool_not_found() {
+async fn test_execute_turn_tool_not_found_returns_tool_calls() {
+    // SingleTurnExecutor does NOT execute tools, so even a nonexistent tool name
+    // is simply returned as a tool_call for AgentLoop to handle.
     let config = AgentConfig::new("test", "Test Agent", "mock-model");
     let provider: Arc<dyn LLMProvider> = Arc::new(MockProvider::with_tool_call(ToolCall {
         id: "call_1".to_string(),
@@ -351,11 +355,12 @@ async fn test_execute_turn_tool_not_found() {
     let messages = vec![Message::user("Hello")];
     let result = executor.execute_turn(&messages).await;
 
-    assert!(result.is_err());
-    match result.unwrap_err() {
-        AgentError::NotFound(msg) => assert!(msg.contains("nonexistent_tool")),
-        _ => panic!("Expected NotFound error"),
-    }
+    // No error — executor just returns tool_calls without executing
+    assert!(result.is_ok());
+    let turn_result = result.unwrap();
+    assert_eq!(turn_result.tool_calls.len(), 1);
+    assert_eq!(turn_result.tool_calls[0].name, "nonexistent_tool");
+    assert!(!turn_result.is_complete);
 }
 
 struct FailingTool {
@@ -386,7 +391,9 @@ impl Tool for FailingTool {
 }
 
 #[tokio::test]
-async fn test_execute_turn_failing_tool() {
+async fn test_execute_turn_with_failing_tool_returns_tool_calls() {
+    // SingleTurnExecutor does NOT execute tools, so even a "failing" tool
+    // simply has its tool_call returned. Failure handling is AgentLoop's job.
     let config = AgentConfig::new("test", "Test Agent", "mock-model");
     let provider: Arc<dyn LLMProvider> = Arc::new(MockProvider::with_tool_call(ToolCall {
         id: "call_1".to_string(),
@@ -399,13 +406,12 @@ async fn test_execute_turn_failing_tool() {
     let messages = vec![Message::user("Hello")];
     let result = executor.execute_turn(&messages).await;
 
-    // Even with failing tool, execution should continue
-    // The error should be captured in the tool result message
     assert!(result.is_ok());
     let turn_result = result.unwrap();
-    assert_eq!(turn_result._tool_results.len(), 1);
-    // Tool result should contain error message
-    assert!(turn_result._tool_results[0].content.text().contains("Error"));
+    // Tool calls returned without execution
+    assert_eq!(turn_result.tool_calls.len(), 1);
+    assert_eq!(turn_result.tool_calls[0].name, "test_tool");
+    assert!(!turn_result.is_complete);
 }
 
 // Tests for SingleTurnResult
@@ -414,7 +420,6 @@ fn test_single_turn_result_debug() {
     let result = SingleTurnResult {
         message: Message::assistant("Test"),
         tool_calls: vec![],
-        _tool_results: vec![],
         is_complete: true,
         _stop_reason: StopReason::EndTurn,
         usage: Usage::default(),

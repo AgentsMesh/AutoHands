@@ -83,7 +83,7 @@ impl MarkdownMemory {
 
     /// Serialize to Markdown string.
     pub fn to_markdown(&self) -> Result<String, MarkdownMemoryError> {
-        let yaml = serde_yaml::to_string(&self.front_matter)
+        let yaml = serde_yml::to_string(&self.front_matter)
             .map_err(|e| MarkdownMemoryError::YamlSerialize(e.to_string()))?;
 
         Ok(format!("---\n{}---\n\n{}", yaml, self.content))
@@ -98,7 +98,7 @@ impl MarkdownParser {
     pub fn parse(content: &str) -> Result<MarkdownMemory, MarkdownMemoryError> {
         let (front_matter, body) = Self::split_front_matter(content)?;
 
-        let fm: FrontMatter = serde_yaml::from_str(&front_matter)
+        let fm: FrontMatter = serde_yml::from_str(&front_matter)
             .map_err(|e| MarkdownMemoryError::YamlParse(e.to_string()))?;
 
         Ok(MarkdownMemory {

@@ -80,6 +80,7 @@
             description: Some("GitHub webhook".to_string()),
             agent: Some("deployer".to_string()),
             enabled: true,
+            secret: None,
         };
         let json = serde_json::to_string(&reg).unwrap();
         assert!(json.contains("github"));

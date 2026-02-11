@@ -159,7 +159,7 @@
         let gemini_tools = converted.unwrap();
         assert_eq!(gemini_tools.len(), 1);
         assert_eq!(gemini_tools[0].function_declarations.len(), 1);
-        assert_eq!(gemini_tools[0].function_declarations[0].name, "Read File");
+        assert_eq!(gemini_tools[0].function_declarations[0].name, "read_file");
     }
 
     #[test]

@@ -37,3 +37,66 @@
         assert_eq!(reg.agent, Some("test-agent".to_string()));
         assert!(reg.enabled);
     }
+
+    #[test]
+    fn test_verify_github_signature_valid() {
+        let secret = "test-secret";
+        let body = b"hello world";
+
+        // Compute the expected signature
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(body);
+        let result = mac.finalize();
+        let hex_sig = hex::encode(result.into_bytes());
+        let sig_header = format!("sha256={}", hex_sig);
+
+        assert!(verify_github_signature(secret, &sig_header, body));
+    }
+
+    #[test]
+    fn test_verify_github_signature_invalid() {
+        let secret = "test-secret";
+        let body = b"hello world";
+        let wrong_sig = "sha256=0000000000000000000000000000000000000000000000000000000000000000";
+
+        assert!(!verify_github_signature(secret, wrong_sig, body));
+    }
+
+    #[test]
+    fn test_verify_github_signature_bad_prefix() {
+        assert!(!verify_github_signature("secret", "sha1=abcdef", b"body"));
+    }
+
+    #[test]
+    fn test_verify_github_signature_invalid_hex() {
+        assert!(!verify_github_signature("secret", "sha256=zzzz", b"body"));
+    }
+
+    #[test]
+    fn test_verify_github_signature_empty_body() {
+        let secret = "my-secret";
+        let body = b"";
+
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(body);
+        let result = mac.finalize();
+        let hex_sig = hex::encode(result.into_bytes());
+        let sig_header = format!("sha256={}", hex_sig);
+
+        assert!(verify_github_signature(secret, &sig_header, body));
+    }
+
+    #[test]
+    fn test_verify_github_signature_wrong_secret() {
+        let body = b"payload";
+
+        // Sign with one secret
+        let mut mac = HmacSha256::new_from_slice(b"correct-secret").unwrap();
+        mac.update(body);
+        let result = mac.finalize();
+        let hex_sig = hex::encode(result.into_bytes());
+        let sig_header = format!("sha256={}", hex_sig);
+
+        // Verify with different secret
+        assert!(!verify_github_signature("wrong-secret", &sig_header, body));
+    }

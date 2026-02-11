@@ -7,13 +7,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::broadcast;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use autohands_core::registry::{ProviderRegistry, ToolRegistry};
 use autohands_runloop::{
-    AgentDriver, AgentSource0, CheckpointObserver, TaskPriority, TaskSource,
+    CheckpointObserver, TaskPriority,
     HealthCheckObserver, LivenessCheck, MemoryCheck, MemoryCheckpointManager, MetricsObserver,
-    RunLoop, RunLoopConfig, Task, RunLoopMode, SignalEvent, SignalSource1, Timer,
+    RunLoop, RunLoopConfig, RunLoopMode, SignalEvent, SignalSource1, Timer,
     TimerBuilder,
 };
 use autohands_runtime::{AgentLoopConfig, AgentRuntime, AgentRuntimeConfig};
@@ -78,7 +78,7 @@ impl RunLoopRunner {
     ///
     /// This method creates and runs the RunLoop with all necessary components:
     /// - AgentRuntime for agent execution
-    /// - AgentDriver for event-driven processing
+    /// - RuntimeAgentEventHandler bridging RunLoop tasks to AgentRuntime
     /// - Observers for health checks, metrics, and checkpoints
     /// - Timer for periodic health checks
     /// - Signal source for daemon signal bridging
@@ -106,23 +106,15 @@ impl RunLoopRunner {
         ));
         info!("AgentRuntime created");
 
-        // Create AgentSource0 for self-driving events
-        let agent_source = Arc::new(AgentSource0::new("agent-events"));
-
-        // Create AgentDriver with RuntimeAgentEventHandler
-        let handler = Arc::new(autohands_runloop::RuntimeAgentEventHandler::new(
-            agent_runtime.clone(),
-            self.default_agent.clone(),
-        ));
-        let agent_driver = Arc::new(
-            AgentDriver::new(run_loop.clone(), agent_source.clone(), self.config.clone())
-                .with_handler(handler),
+        // Configure RunLoop with handler
+        let handler: Arc<dyn autohands_runloop::AgentEventHandler> = Arc::new(
+            autohands_runloop::RuntimeAgentEventHandler::new(
+                agent_runtime.clone(),
+                self.default_agent.clone(),
+            ),
         );
-        agent_driver.start();
-        info!(
-            "AgentDriver started with {} workers",
-            self.config.workers.max_workers
-        );
+        run_loop.set_handler(handler).await;
+        info!("RunLoop: Agent event handler configured for daemon mode");
 
         // Register observers
         self.register_observers(&run_loop).await;
@@ -157,7 +149,6 @@ impl RunLoopRunner {
             .await;
 
         // Cleanup
-        agent_driver.stop();
         heartbeat_timer.cancel();
 
         match result {
@@ -206,111 +197,6 @@ impl RunLoopRunner {
             .task_type("system:heartbeat")
             .priority(TaskPriority::Low)
             .build(run_loop.clone())
-    }
-}
-
-/// RunLoop event handler that processes daemon-specific events.
-pub struct DaemonEventHandler {
-    /// AgentDriver for agent events.
-    agent_driver: Arc<AgentDriver>,
-}
-
-impl DaemonEventHandler {
-    /// Create a new DaemonEventHandler.
-    pub fn new(agent_driver: Arc<AgentDriver>) -> Self {
-        Self { agent_driver }
-    }
-
-    /// Process a task.
-    pub async fn process(&self, task: Task) -> Result<(), DaemonError> {
-        match task.task_type.as_str() {
-            // Agent tasks
-            "agent:execute" | "agent:subtask" | "agent:delayed" => {
-                self.agent_driver
-                    .process_task(task)
-                    .await
-                    .map_err(|e| DaemonError::Custom(format!("Agent error: {}", e)))?;
-            }
-
-            // System events
-            "system:heartbeat" => {
-                debug!("Heartbeat received");
-            }
-            "system:shutdown" => {
-                info!("Shutdown event received");
-            }
-            "system:reload" => {
-                info!("Reload event received");
-                // TODO: Implement config reload
-            }
-
-            // Scheduler tasks
-            "scheduler:job:due" => {
-                info!("Scheduler job due: {:?}", task.payload);
-                // Convert to agent:execute task
-                if let Some(prompt) = task.payload.get("prompt").and_then(|v| v.as_str()) {
-                    let agent = task
-                        .payload
-                        .get("agent")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("general");
-
-                    let execute_event = Task::new(
-                        "agent:execute",
-                        serde_json::json!({
-                            "agent": agent,
-                            "prompt": prompt,
-                        }),
-                    )
-                    .with_source(TaskSource::Scheduler)
-                    .with_priority(TaskPriority::Normal);
-
-                    self.agent_driver
-                        .process_task(execute_event)
-                        .await
-                        .map_err(|e| DaemonError::Custom(format!("Agent error: {}", e)))?;
-                }
-            }
-
-            // Trigger tasks
-            "trigger:file:changed" | "trigger:webhook" => {
-                info!("Trigger task: {:?}", task.payload);
-                // Convert to agent:execute task
-                if let Some(prompt) = task.payload.get("prompt").and_then(|v| v.as_str()) {
-                    let agent = task
-                        .payload
-                        .get("agent")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("general");
-
-                    let execute_event = Task::new(
-                        "agent:execute",
-                        serde_json::json!({
-                            "agent": agent,
-                            "prompt": prompt,
-                        }),
-                    )
-                    .with_source(TaskSource::Custom("trigger".to_string()))
-                    .with_priority(TaskPriority::High);
-
-                    self.agent_driver
-                        .process_task(execute_event)
-                        .await
-                        .map_err(|e| DaemonError::Custom(format!("Agent error: {}", e)))?;
-                }
-            }
-
-            // Error tasks (for logging)
-            "agent:error" => {
-                warn!("Agent error: {:?}", task.payload);
-            }
-
-            _ => {
-                debug!("Unhandled event type: {}", task.task_type);
-            }
-        }
-
-        Ok(())
     }
 }
 

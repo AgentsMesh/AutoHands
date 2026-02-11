@@ -1,22 +1,19 @@
 //! Webhook trigger implementation.
 //!
-//! Provides both the full WebhookTrigger implementation and
-//! the Source1 adapter for RunLoop integration.
+//! Provides the `WebhookTrigger` for managing webhook events, and
+//! `WebhookInjector` for injecting webhook events via `TaskSubmitter`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::json;
-use tokio::sync::{broadcast, mpsc};
-use tracing::{debug, info};
+use tokio::sync::broadcast;
+use tracing::info;
 
 // Re-use shared trigger types
 use super::trigger_types::{Trigger, TriggerError, TriggerEvent, WebhookConfig};
-use crate::error::RunLoopResult;
-use crate::task::{Task, TaskPriority, TaskSource};
-use crate::mode::RunLoopMode;
-use crate::source::{PortMessage, Source1, Source1Receiver};
+use autohands_protocols::extension::TaskSubmitter;
 
 // ============================================================================
 // WebhookTrigger - Full implementation
@@ -110,10 +107,10 @@ impl Trigger for WebhookTrigger {
 }
 
 // ============================================================================
-// WebhookSource1 - RunLoop Source1 adapter
+// WebhookEvent
 // ============================================================================
 
-/// Webhook event for Source1.
+/// Webhook event data.
 #[derive(Debug, Clone)]
 pub struct WebhookEvent {
     /// Webhook ID.
@@ -130,97 +127,40 @@ pub struct WebhookEvent {
     pub prompt: Option<String>,
 }
 
-/// Webhook Source1.
+// ============================================================================
+// WebhookInjector - Injects webhook events via TaskSubmitter
+// ============================================================================
+
+/// Webhook event injector.
 ///
-/// Receives webhook events and produces RunLoop events.
-pub struct WebhookSource1 {
-    id: String,
-    cancelled: AtomicBool,
-    modes: Vec<RunLoopMode>,
+/// Converts webhook events into tasks via `TaskSubmitter` (which handles
+/// both enqueuing and wakeup). Decoupled from RunLoop internals.
+pub struct WebhookInjector {
+    task_submitter: Arc<dyn TaskSubmitter>,
 }
 
-impl WebhookSource1 {
-    /// Create a new webhook source.
-    pub fn new(id: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            cancelled: AtomicBool::new(false),
-            modes: vec![RunLoopMode::Default],
-        }
+impl WebhookInjector {
+    /// Create a new webhook injector.
+    pub fn new(task_submitter: Arc<dyn TaskSubmitter>) -> Self {
+        Self { task_submitter }
     }
 
-    /// Create with custom modes.
-    pub fn with_modes(mut self, modes: Vec<RunLoopMode>) -> Self {
-        self.modes = modes;
-        self
-    }
-
-    /// Create a Source1Receiver for this source.
-    pub fn create_receiver(self) -> (Source1Receiver, mpsc::Sender<PortMessage>) {
-        let (tx, rx) = mpsc::channel(256);
-        let source = Arc::new(self);
-        (Source1Receiver::new(source, rx), tx)
-    }
-
-    /// Create a PortMessage from a WebhookEvent.
-    pub fn create_message(event: WebhookEvent) -> PortMessage {
-        PortMessage::new(
-            "webhook",
-            json!({
-                "webhook_id": event.webhook_id,
-                "method": event.method,
-                "path": event.path,
-                "body": event.body,
-                "agent": event.agent,
-                "prompt": event.prompt,
-            }),
-        )
-    }
-}
-
-#[async_trait]
-impl Source1 for WebhookSource1 {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    async fn handle(&self, msg: PortMessage) -> RunLoopResult<Vec<Task>> {
-        let webhook_id = msg.payload["webhook_id"].as_str().unwrap_or("");
-        let method = msg.payload["method"].as_str().unwrap_or("POST");
-        let path = msg.payload["path"].as_str().unwrap_or("/");
-        let body = msg.payload["body"].clone();
-        let agent = msg.payload["agent"].as_str();
-        let prompt = msg.payload["prompt"].as_str();
-
-        debug!("Webhook received: {} {} {}", webhook_id, method, path);
-
-        let event = Task::new(
-            "trigger:webhook:received",
-            json!({
-                "webhook_id": webhook_id,
-                "method": method,
-                "path": path,
-                "body": body,
-                "agent": agent,
-                "prompt": prompt,
-            }),
-        )
-        .with_source(TaskSource::Webhook)
-        .with_priority(TaskPriority::Normal);
-
-        Ok(vec![event])
-    }
-
-    fn modes(&self) -> &[RunLoopMode] {
-        &self.modes
-    }
-
-    fn is_valid(&self) -> bool {
-        !self.cancelled.load(Ordering::SeqCst)
-    }
-
-    fn cancel(&self) {
-        self.cancelled.store(true, Ordering::SeqCst);
+    /// Inject a webhook event as a task.
+    pub async fn inject(&self, event: WebhookEvent) -> Result<(), autohands_protocols::error::ExtensionError> {
+        self.task_submitter
+            .submit_task(
+                "trigger:webhook:received",
+                json!({
+                    "webhook_id": event.webhook_id,
+                    "method": event.method,
+                    "path": event.path,
+                    "body": event.body,
+                    "agent": event.agent,
+                    "prompt": event.prompt,
+                }),
+                None,
+            )
+            .await
     }
 }
 

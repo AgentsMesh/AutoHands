@@ -1,25 +1,16 @@
-//! Agent driver for task-driven agent execution.
+//! Agent types for task-driven agent execution.
 //!
-//! The AgentDriver integrates agent execution with the RunLoop,
-//! implementing the Worker Pool pattern for concurrent execution.
-
-use std::sync::atomic::{AtomicBool, AtomicU64};
-use std::sync::Arc;
+//! Defines the core types and traits for agent task processing:
+//! - [`AgentEventHandler`]: Trait for handling agent tasks
+//! - [`AgentResult`]: Result of agent task execution
+//! - [`AgentExecutionContext`] / [`ExecutionStatus`]: Runtime state tracking
 
 use chrono::{DateTime, Utc};
-use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Semaphore;
 
-use crate::agent_source::{AgentSource0, AgentTaskInjector};
-use crate::config::RunLoopConfig;
+use crate::agent_source::AgentTaskInjector;
 use crate::error::RunLoopResult;
 use crate::task::Task;
-use crate::RunLoop;
-
-#[path = "agent_driver_impl.rs"]
-mod agent_driver_impl;
-pub use agent_driver_impl::NoOpEventHandler;
 
 #[cfg(test)]
 #[path = "agent_driver_tests.rs"]
@@ -128,6 +119,7 @@ impl AgentResult {
 /// Agent task handler trait.
 ///
 /// Implement this trait to define how agent tasks are processed.
+/// The RunLoop dispatches tasks to the configured handler based on task type.
 #[async_trait::async_trait]
 pub trait AgentEventHandler: Send + Sync {
     /// Handle an agent execution task.
@@ -150,59 +142,4 @@ pub trait AgentEventHandler: Send + Sync {
         task: &Task,
         injector: &AgentTaskInjector,
     ) -> RunLoopResult<AgentResult>;
-}
-
-/// Agent driver - integrates Agent execution with RunLoop.
-///
-/// Implements a Worker Pool pattern for concurrent agent execution.
-pub struct AgentDriver {
-    /// RunLoop reference.
-    run_loop: Arc<RunLoop>,
-
-    /// Agent task source.
-    agent_source: Arc<AgentSource0>,
-
-    /// Task handler.
-    handler: Arc<dyn AgentEventHandler>,
-
-    /// Worker pool semaphore.
-    worker_semaphore: Arc<Semaphore>,
-
-    /// Active execution contexts.
-    contexts: DashMap<String, AgentExecutionContext>,
-
-    /// Running flag.
-    running: AtomicBool,
-
-    /// Total tasks processed.
-    tasks_processed: AtomicU64,
-
-    /// Configuration.
-    config: RunLoopConfig,
-}
-
-impl AgentDriver {
-    /// Create a new AgentDriver.
-    pub fn new(
-        run_loop: Arc<RunLoop>,
-        agent_source: Arc<AgentSource0>,
-        config: RunLoopConfig,
-    ) -> Self {
-        Self {
-            run_loop,
-            agent_source,
-            handler: Arc::new(agent_driver_impl::NoOpEventHandler),
-            worker_semaphore: Arc::new(Semaphore::new(config.workers.max_workers)),
-            contexts: DashMap::new(),
-            running: AtomicBool::new(false),
-            tasks_processed: AtomicU64::new(0),
-            config,
-        }
-    }
-
-    /// Set the task handler.
-    pub fn with_handler(mut self, handler: Arc<dyn AgentEventHandler>) -> Self {
-        self.handler = handler;
-        self
-    }
 }

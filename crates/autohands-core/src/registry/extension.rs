@@ -91,7 +91,7 @@ mod tests {
             Ok(())
         }
 
-        async fn shutdown(&mut self) -> Result<(), ExtensionError> {
+        async fn shutdown(&self) -> Result<(), ExtensionError> {
             Ok(())
         }
 

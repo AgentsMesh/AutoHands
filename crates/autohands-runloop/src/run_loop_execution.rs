@@ -2,11 +2,15 @@
 
 use std::time::{Duration, Instant};
 
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::error::{RunLoopError, RunLoopResult};
 use crate::mode::{RunLoopMode, RunLoopPhase, RunLoopRunResult, RunLoopState};
 use crate::run_loop::{RunLoop, WakeupSignal};
+
+/// Maximum number of Source1 messages to process per iteration,
+/// preventing livelock when Source1 produces messages faster than they are consumed.
+const MAX_SOURCE1_BATCH: usize = 10;
 
 impl RunLoop {
     /// Run the RunLoop (blocking until stopped).
@@ -61,11 +65,24 @@ impl RunLoop {
                 self.task_queue.enqueue(task).await?;
             }
 
-            if let Some(tasks) = self.try_process_source1().await? {
-                for task in tasks {
-                    self.task_queue.enqueue(task).await?;
+            // Process Source1 messages with bounded batch size to prevent livelock.
+            // If Source1 keeps producing messages, we still fall through to task dequeue.
+            let mut source1_count = 0;
+            while source1_count < MAX_SOURCE1_BATCH {
+                if let Some(tasks) = self.try_process_source1().await? {
+                    for task in tasks {
+                        self.task_queue.enqueue(task).await?;
+                    }
+                    source1_count += 1;
+                } else {
+                    break;
                 }
-                continue;
+            }
+            if source1_count >= MAX_SOURCE1_BATCH {
+                warn!(
+                    "Source1 batch limit reached ({} messages), yielding to task dequeue",
+                    MAX_SOURCE1_BATCH
+                );
             }
 
             if let Some(task) = self.task_queue.dequeue().await {

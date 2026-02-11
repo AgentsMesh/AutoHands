@@ -5,6 +5,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::error::AgentError;
 use crate::types::{Message, Metadata};
@@ -134,6 +135,9 @@ pub struct AgentContext {
 
     /// Additional context data.
     pub data: HashMap<String, serde_json::Value>,
+
+    /// Working directory for tool execution. Falls back to `current_dir()` if `None`.
+    pub work_dir: Option<PathBuf>,
 }
 
 impl AgentContext {
@@ -143,7 +147,13 @@ impl AgentContext {
             history: Vec::new(),
             abort_signal: std::sync::Arc::new(crate::tool::AbortSignal::new()),
             data: HashMap::new(),
+            work_dir: None,
         }
+    }
+
+    pub fn with_work_dir(mut self, work_dir: PathBuf) -> Self {
+        self.work_dir = Some(work_dir);
+        self
     }
 
     pub fn with_history(mut self, history: Vec<Message>) -> Self {

@@ -1,10 +1,9 @@
-//! Tests for file watcher trigger.
+//! Tests for file watcher trigger and injector.
 
 use super::*;
 use super::super::trigger_types::{FileWatcherConfig, Trigger};
-use super::super::file_watcher_source::{FileChangeEvent, FileChangeType, FileWatcherSource1};
+use super::super::file_watcher_source::{FileChangeEvent, FileChangeType, FileWatcherInjector};
 use super::super::file_watcher_manager::FileWatcherManager;
-use crate::source::Source1;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -153,46 +152,29 @@ async fn test_file_watcher_event_detection() {
     }
 }
 
-// Source1 tests
-#[tokio::test]
-async fn test_file_watcher_source1() {
-    let source = FileWatcherSource1::new("file-watcher");
-    assert_eq!(source.id(), "file-watcher");
-    assert!(source.is_valid());
+// FileWatcherInjector tests
+#[test]
+fn test_file_watcher_injector_creation() {
+    use crate::RunLoopConfig;
+    use autohands_protocols::extension::TaskSubmitter;
+    // RunLoop implements TaskSubmitter
+    let run_loop: std::sync::Arc<dyn TaskSubmitter> = std::sync::Arc::new(crate::RunLoop::new(RunLoopConfig::default()));
+    let injector = FileWatcherInjector::new(run_loop);
+    // Injector created successfully - no panics
+    let _ = injector;
 }
 
-#[tokio::test]
-async fn test_file_watcher_source1_handle() {
-    let source = FileWatcherSource1::new("file-watcher");
-
-    let msg = FileWatcherSource1::create_message(FileChangeEvent {
+#[test]
+fn test_file_change_event_creation() {
+    let event = FileChangeEvent {
         path: "/test/file.txt".to_string(),
         change_type: FileChangeType::Modified,
         agent: Some("general".to_string()),
         prompt: Some("Handle file change".to_string()),
-    });
+    };
 
-    let events = source.handle(msg).await.unwrap();
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].task_type, "trigger:file:changed");
-}
-
-#[tokio::test]
-async fn test_file_watcher_create_receiver() {
-    let source = FileWatcherSource1::new("file-watcher");
-    let (receiver, tx) = source.create_receiver();
-
-    assert_eq!(receiver.source.id(), "file-watcher");
-
-    // Test sending a message
-    let msg = FileWatcherSource1::create_message(FileChangeEvent {
-        path: "/test.txt".to_string(),
-        change_type: FileChangeType::Created,
-        agent: None,
-        prompt: None,
-    });
-
-    tx.send(msg).await.unwrap();
+    assert_eq!(event.path, "/test/file.txt");
+    assert_eq!(event.agent.unwrap(), "general");
 }
 
 #[test]

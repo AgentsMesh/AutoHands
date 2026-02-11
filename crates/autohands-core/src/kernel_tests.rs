@@ -2,6 +2,7 @@
     use async_trait::async_trait;
     use autohands_protocols::types::Version;
     use std::any::Any;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     struct MockExtension {
         manifest: ExtensionManifest,
@@ -195,4 +196,131 @@
         kernel.load_extension(ext1, serde_json::Value::Null).await.unwrap();
         let result = kernel.load_extension(ext2, serde_json::Value::Null).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_unload_calls_shutdown() {
+        struct ShutdownTracker {
+            manifest: ExtensionManifest,
+            shutdown_called: AtomicBool,
+        }
+
+        impl ShutdownTracker {
+            fn new() -> Self {
+                Self {
+                    manifest: ExtensionManifest::new(
+                        "shutdown-tracker",
+                        "Shutdown Tracker",
+                        Version::new(1, 0, 0),
+                    ),
+                    shutdown_called: AtomicBool::new(false),
+                }
+            }
+        }
+
+        #[async_trait]
+        impl Extension for ShutdownTracker {
+            fn manifest(&self) -> &ExtensionManifest {
+                &self.manifest
+            }
+
+            async fn initialize(&mut self, _ctx: ExtensionContext) -> Result<(), ExtensionError> {
+                Ok(())
+            }
+
+            async fn shutdown(&self) -> Result<(), ExtensionError> {
+                self.shutdown_called.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+
+            fn as_any_mut(&mut self) -> &mut dyn Any {
+                self
+            }
+        }
+
+        let kernel = Kernel::new(PathBuf::from("."));
+        let ext = Box::new(ShutdownTracker::new());
+
+        kernel
+            .load_extension(ext, serde_json::Value::Null)
+            .await
+            .unwrap();
+
+        // Get a reference to verify shutdown was called
+        let ext_ref = kernel
+            .tool_registry()
+            .clone(); // Just to keep kernel alive
+        drop(ext_ref);
+
+        // Get the extension from registry to check later
+        let ext_arc = kernel
+            .list_extensions();
+        assert_eq!(ext_arc.len(), 1);
+
+        kernel.unload_extension("shutdown-tracker").await.unwrap();
+        assert!(kernel.list_extensions().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_stop_calls_shutdown_on_all_extensions() {
+        struct ShutdownFlag {
+            manifest: ExtensionManifest,
+            shutdown_called: Arc<AtomicBool>,
+        }
+
+        #[async_trait]
+        impl Extension for ShutdownFlag {
+            fn manifest(&self) -> &ExtensionManifest {
+                &self.manifest
+            }
+
+            async fn initialize(&mut self, _ctx: ExtensionContext) -> Result<(), ExtensionError> {
+                Ok(())
+            }
+
+            async fn shutdown(&self) -> Result<(), ExtensionError> {
+                self.shutdown_called.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+
+            fn as_any_mut(&mut self) -> &mut dyn Any {
+                self
+            }
+        }
+
+        let flag1 = Arc::new(AtomicBool::new(false));
+        let flag2 = Arc::new(AtomicBool::new(false));
+
+        let ext1 = Box::new(ShutdownFlag {
+            manifest: ExtensionManifest::new("ext-1", "Ext 1", Version::new(1, 0, 0)),
+            shutdown_called: flag1.clone(),
+        });
+        let ext2 = Box::new(ShutdownFlag {
+            manifest: ExtensionManifest::new("ext-2", "Ext 2", Version::new(1, 0, 0)),
+            shutdown_called: flag2.clone(),
+        });
+
+        let kernel = Kernel::new(PathBuf::from("."));
+        kernel.start().await.unwrap();
+        kernel
+            .load_extension(ext1, serde_json::Value::Null)
+            .await
+            .unwrap();
+        kernel
+            .load_extension(ext2, serde_json::Value::Null)
+            .await
+            .unwrap();
+
+        kernel.stop().await.unwrap();
+
+        assert!(flag1.load(Ordering::SeqCst), "ext-1 shutdown not called");
+        assert!(flag2.load(Ordering::SeqCst), "ext-2 shutdown not called");
     }

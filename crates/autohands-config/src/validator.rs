@@ -157,7 +157,7 @@ impl ConfigValidator {
 
     fn validate_memory(config: &Config, result: &mut ValidationResult) {
         // Validate backend
-        let valid_backends = ["sqlite", "memory", "vector"];
+        let valid_backends = ["sqlite", "memory", "vector", "markdown", "hybrid"];
         if !valid_backends.contains(&config.memory.backend.as_str()) {
             result.add_warning(ValidationWarning::new(
                 "memory.backend",

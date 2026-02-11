@@ -49,10 +49,15 @@ pub struct InterfaceServer {
 
 impl InterfaceServer {
     /// Create a new server with the required RunLoop state.
-    pub fn new(config: InterfaceConfig, base: Arc<AppState>, runloop: Arc<RunLoopState>) -> Self {
+    pub fn new(
+        config: InterfaceConfig,
+        base: Arc<AppState>,
+        runloop: Arc<RunLoopState>,
+        api_ws_channel: Arc<crate::websocket::ApiWsChannel>,
+    ) -> Self {
         Self {
             config,
-            state: Arc::new(HybridAppState::new(base, runloop)),
+            state: Arc::new(HybridAppState::new(base, runloop, api_ws_channel)),
         }
     }
 
@@ -85,11 +90,12 @@ mod tests {
     use super::*;
     use autohands_runloop::{RunLoop, RunLoopConfig};
 
-    fn create_test_state() -> (Arc<AppState>, Arc<RunLoopState>) {
+    fn create_test_state() -> (Arc<AppState>, Arc<RunLoopState>, Arc<crate::websocket::ApiWsChannel>) {
         let base = Arc::new(AppState::default());
         let run_loop = Arc::new(RunLoop::new(RunLoopConfig::default()));
         let runloop = Arc::new(RunLoopState::from_runloop(run_loop));
-        (base, runloop)
+        let api_ws_channel = Arc::new(crate::websocket::ApiWsChannel::new());
+        (base, runloop, api_ws_channel)
     }
 
     #[test]
@@ -109,16 +115,16 @@ mod tests {
     #[test]
     fn test_interface_server_creation() {
         let config = InterfaceConfig::default();
-        let (base, runloop) = create_test_state();
-        let server = InterfaceServer::new(config, base, runloop);
+        let (base, runloop, api_ws_channel) = create_test_state();
+        let server = InterfaceServer::new(config, base, runloop, api_ws_channel);
         assert_eq!(server.addr(), "127.0.0.1:8080");
     }
 
     #[test]
     fn test_interface_server_with_hybrid_state() {
         let config = InterfaceConfig::default();
-        let (base, runloop) = create_test_state();
-        let hybrid = Arc::new(HybridAppState::new(base, runloop));
+        let (base, runloop, api_ws_channel) = create_test_state();
+        let hybrid = Arc::new(HybridAppState::new(base, runloop, api_ws_channel));
         let server = InterfaceServer::with_hybrid_state(config, hybrid);
         assert_eq!(server.addr(), "127.0.0.1:8080");
     }
@@ -141,8 +147,8 @@ mod tests {
     #[test]
     fn test_interface_server_addr_format() {
         let config = InterfaceConfig::new("192.168.1.1", 443);
-        let (base, runloop) = create_test_state();
-        let server = InterfaceServer::new(config, base, runloop);
+        let (base, runloop, api_ws_channel) = create_test_state();
+        let server = InterfaceServer::new(config, base, runloop, api_ws_channel);
         assert_eq!(server.addr(), "192.168.1.1:443");
     }
 

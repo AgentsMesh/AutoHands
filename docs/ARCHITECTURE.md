@@ -81,11 +81,9 @@ autohands/
 │       ├── provider-ark/        # Volcengine Ark Provider
 │       ├── memory-sqlite/       # SQLite memory backend
 │       ├── memory-vector/       # Vector memory backend
-│       ├── channel-webhook/     # Webhook channel
 │       ├── agent-general/       # General Agent
 │       ├── skills-bundled/      # Built-in skills
-│       ├── skills-dynamic/      # Dynamic skill loader
-│       └── mcp-bridge/          # MCP protocol bridge
+│       └── skills-dynamic/      # Dynamic skill loader
 │
 ├── src/                         # Main program entry
 │   └── main.rs

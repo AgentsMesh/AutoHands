@@ -2,11 +2,12 @@
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use std::path::PathBuf;
 
 use autohands_protocols::error::ToolError;
 use autohands_protocols::tool::{Tool, ToolContext, ToolDefinition, ToolResult};
 use autohands_protocols::types::RiskLevel;
+
+use super::resolve_path_safe;
 
 /// Parameters for move_file tool.
 #[derive(Debug, Deserialize)]
@@ -78,8 +79,8 @@ impl Tool for MoveFileTool {
         let params: MoveFileParams = serde_json::from_value(params)
             .map_err(|e| ToolError::InvalidParameters(e.to_string()))?;
 
-        let source = resolve_path(&params.source, &ctx.work_dir);
-        let destination = resolve_path(&params.destination, &ctx.work_dir);
+        let source = resolve_path_safe(&params.source, &ctx.work_dir)?;
+        let destination = resolve_path_safe(&params.destination, &ctx.work_dir)?;
 
         if !source.exists() {
             return Err(ToolError::ResourceNotFound(format!(
@@ -118,15 +119,6 @@ impl Tool for MoveFileTool {
             source.display(),
             destination.display()
         )))
-    }
-}
-
-fn resolve_path(path: &str, work_dir: &PathBuf) -> PathBuf {
-    let p = PathBuf::from(path);
-    if p.is_absolute() {
-        p
-    } else {
-        work_dir.join(p)
     }
 }
 

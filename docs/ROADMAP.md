@@ -250,15 +250,10 @@ Enhance ecosystem, improve usability and extensibility.
   - [x] OCR
 
 #### 4.3 Channel Support
-- [x] channel-webhook (Webhook channel)
 - [ ] channel-telegram (Telegram channel, optional)
 
 #### 4.4 MCP Support
-- [x] mcp-bridge
-  - [x] MCP protocol implementation (JSON-RPC)
-  - [x] stdio transport
-  - [x] HTTP/SSE transport
-  - [x] Tool discovery and registration
+- [ ] MCP protocol bridge (planned)
 
 #### 4.5 Vector Memory
 - [x] memory-vector

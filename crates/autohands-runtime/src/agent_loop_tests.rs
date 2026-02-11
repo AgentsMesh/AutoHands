@@ -248,6 +248,7 @@ async fn test_agent_loop_run_aborted() {
         history: Vec::new(),
         abort_signal,
         data: HashMap::new(),
+        work_dir: None,
     };
     let message = Message::user("Hello");
 
@@ -612,6 +613,7 @@ async fn test_memory_no_flush_on_abort() {
         history: Vec::new(),
         abort_signal,
         data: HashMap::new(),
+        work_dir: None,
     };
     let message = Message::user("I prefer Python");
 

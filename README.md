@@ -128,8 +128,7 @@ autohands/
 │       ├── provider-openai/     # OpenAI provider
 │       ├── provider-ark/        # Ark provider
 │       ├── memory-sqlite/       # SQLite memory backend
-│       ├── memory-vector/       # Vector memory backend
-│       └── mcp-bridge/          # MCP protocol bridge
+│       └── memory-vector/       # Vector memory backend
 ├── docs/
 │   ├── ARCHITECTURE.md          # Architecture design
 │   └── ROADMAP.md               # Development roadmap

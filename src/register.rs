@@ -14,6 +14,9 @@ use autohands_runtime::AgentRuntime;
 
 // Memory extensions
 use autohands_memory_sqlite::SqliteMemoryExtension;
+use autohands_memory_markdown::MarkdownMemoryExtension;
+use autohands_memory_vector::VectorMemoryExtension;
+use autohands_memory_hybrid::HybridMemoryExtension;
 use autohands_tools_memory::MemoryToolsExtension;
 
 // Tool extensions
@@ -29,8 +32,9 @@ use autohands_tools_shell::ShellExtension;
 use autohands_tools_skill::SkillToolsExtension;
 use autohands_tools_web::WebToolsExtension;
 
-// Agent extension
+// Agent extensions
 use autohands_agent_general::GeneralAgent;
+use autohands_tools_agent::AgentToolsExtension;
 
 // Protocols for extension context
 use autohands_protocols::agent::AgentConfig;
@@ -42,13 +46,17 @@ use autohands_skills_dynamic::SkillMetadataInjector;
 use crate::adapters::autohands_dir;
 use crate::cmd_skill::create_skill_loader_for_server;
 
-/// Register available tools and return (skill registry, optional memory backend).
+/// Register available tools and return (skill registry, optional memory backend, agent tools extension).
 pub(crate) async fn register_tools_with_skill_registry(
     tool_registry: Arc<ToolRegistry>,
     provider_registry: Arc<ProviderRegistry>,
     work_dir: &PathBuf,
     config: &Config,
-) -> (Arc<autohands_skills_dynamic::SkillRegistry>, Option<Arc<dyn autohands_protocols::memory::MemoryBackend>>) {
+) -> (
+    Arc<autohands_skills_dynamic::SkillRegistry>,
+    Option<Arc<dyn autohands_protocols::memory::MemoryBackend>>,
+    Option<AgentToolsExtension>,
+) {
     use autohands_core::registry::MemoryRegistry;
     use autohands_protocols::extension::ExtensionContext;
 
@@ -169,6 +177,45 @@ pub(crate) async fn register_tools_with_skill_registry(
                 }
             }
         }
+        "markdown" => {
+            let path = config.memory.path.clone()
+                .map(|p| {
+                    let expanded = ConfigLoader::expand_path(&p.to_string_lossy());
+                    PathBuf::from(expanded)
+                })
+                .unwrap_or_else(|| autohands_dir().join("memory"));
+            let mut md_ext = MarkdownMemoryExtension::new().with_path(&path);
+            match md_ext.initialize(ctx.clone()).await {
+                Ok(()) => {
+                    info!("Registered markdown memory backend (path={})", path.display());
+                }
+                Err(e) => {
+                    warn!("Failed to initialize markdown memory backend: {}", e);
+                }
+            }
+        }
+        "vector" => {
+            let mut vector_ext = VectorMemoryExtension::new();
+            match vector_ext.initialize(ctx.clone()).await {
+                Ok(()) => {
+                    info!("Registered vector memory backend");
+                }
+                Err(e) => {
+                    warn!("Failed to initialize vector memory backend: {}", e);
+                }
+            }
+        }
+        "hybrid" => {
+            let mut hybrid_ext = HybridMemoryExtension::new();
+            match hybrid_ext.initialize(ctx.clone()).await {
+                Ok(()) => {
+                    info!("Registered hybrid memory backend");
+                }
+                Err(e) => {
+                    warn!("Failed to initialize hybrid memory backend: {}", e);
+                }
+            }
+        }
         other => {
             info!("Using '{}' memory backend (no additional registration needed)", other);
         }
@@ -232,6 +279,21 @@ pub(crate) async fn register_tools_with_skill_registry(
         }
     }
 
+    // Register Agent tools (agent_spawn, agent_status, agent_message, etc.)
+    let agent_tools_ext = {
+        let mut ext = AgentToolsExtension::new();
+        match ext.initialize(ctx.clone()).await {
+            Ok(()) => {
+                info!("Registered agent tools: {:?}", ext.manifest().provides.tools);
+                Some(ext)
+            }
+            Err(e) => {
+                warn!("Failed to initialize agent tools extension: {}", e);
+                None
+            }
+        }
+    };
+
     // Create skill registry and loader
     let skill_registry = Arc::new(autohands_skills_dynamic::SkillRegistry::new());
     let skill_loader = create_skill_loader_for_server(work_dir).await;
@@ -246,6 +308,22 @@ pub(crate) async fn register_tools_with_skill_registry(
                 }
             }
             info!("Loaded {} skills into registry for progressive disclosure", skill_defs.len());
+        }
+    }
+
+    // Load bundled skills into registry
+    {
+        use autohands_skills_bundled::BundledSkillLoader;
+        use autohands_protocols::skill::SkillLoader as _;
+
+        let bundled_loader = BundledSkillLoader::new();
+        if let Ok(defs) = bundled_loader.list().await {
+            for def in &defs {
+                if let Ok(skill) = bundled_loader.load(&def.id).await {
+                    skill_registry.register(skill).await;
+                }
+            }
+            info!("Loaded {} bundled skills into registry", defs.len());
         }
     }
 
@@ -268,7 +346,7 @@ pub(crate) async fn register_tools_with_skill_registry(
     let total_tools = tool_registry.list().len();
     info!("Total registered tools: {}", total_tools);
 
-    (skill_registry, memory_backend)
+    (skill_registry, memory_backend, agent_tools_ext)
 }
 
 /// Register available agents with skill metadata injected into system prompt.

@@ -220,8 +220,8 @@ impl Extension for BrowserToolsExtension {
         Ok(())
     }
 
-    async fn shutdown(&mut self) -> Result<(), ExtensionError> {
-        if let Some(manager) = self.manager.take() {
+    async fn shutdown(&self) -> Result<(), ExtensionError> {
+        if let Some(ref manager) = self.manager {
             manager
                 .shutdown_chrome()
                 .await

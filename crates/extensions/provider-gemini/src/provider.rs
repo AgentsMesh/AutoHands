@@ -114,7 +114,7 @@ impl GeminiProvider {
                 .tools
                 .iter()
                 .map(|tool| FunctionDeclaration {
-                    name: tool.name.clone(),
+                    name: tool.id.clone(),
                     description: tool.description.clone(),
                     parameters: tool.parameters_schema.clone().unwrap_or_default(),
                 })

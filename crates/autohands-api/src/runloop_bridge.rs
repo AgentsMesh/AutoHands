@@ -22,6 +22,7 @@ pub trait RunLoopBridge: Send + Sync {
         &self,
         task_type: &str,
         payload: serde_json::Value,
+        reply_to: Option<autohands_protocols::channel::ReplyAddress>,
     ) -> impl std::future::Future<Output = Result<(), crate::error::InterfaceError>> + Send;
 }
 
@@ -46,12 +47,20 @@ impl RunLoopState {
     }
 
     /// Submit a task to the RunLoop.
+    ///
+    /// If `reply_to` is provided, the RunLoop will route the agent's response
+    /// back through the ChannelRegistry to the specified reply address.
     pub async fn submit_task(
         &self,
         task_type: &str,
         payload: serde_json::Value,
+        reply_to: Option<autohands_protocols::channel::ReplyAddress>,
     ) -> Result<(), crate::error::InterfaceError> {
-        let task = Task::new(task_type, payload);
+        let mut task = Task::new(task_type, payload);
+        if let Some(addr) = reply_to {
+            task = task.with_reply_to(addr);
+        }
+
         self.run_loop.inject_task(task).await.map_err(|e| {
             crate::error::InterfaceError::RunLoopInjectionFailed(format!(
                 "Failed to inject task: {}",
@@ -122,7 +131,7 @@ pub async fn submit_task(
         "agent_id": agent_id,
     });
 
-    match state.submit_task("agent:execute", payload).await {
+    match state.submit_task("agent:execute", payload, None).await {
         Ok(()) => {
             info!("Task submitted to RunLoop: session={}", session_id);
 
@@ -160,17 +169,80 @@ pub struct HybridAppState {
 
     /// RunLoop state for event injection.
     pub runloop: Arc<RunLoopState>,
+
+    /// API WebSocket channel for routing responses to WebSocket connections.
+    pub api_ws_channel: Arc<crate::websocket::ApiWsChannel>,
+
+    /// Webhook registry for managing webhook registrations.
+    pub webhook_registry: Arc<crate::webhook::WebhookRegistry>,
+
+    /// Workflow executor for running workflows.
+    pub workflow_executor: Arc<crate::workflow::WorkflowExecutor>,
+
+    /// Workflow store for persistence.
+    pub workflow_store: Arc<dyn crate::workflow::WorkflowStore>,
+
+    /// Job store for persistence.
+    pub job_store: Arc<dyn crate::job::JobStore>,
 }
 
 impl HybridAppState {
     /// Create state with RunLoop.
-    pub fn new(base: Arc<AppState>, runloop: Arc<RunLoopState>) -> Self {
-        Self { base, runloop }
+    pub fn new(
+        base: Arc<AppState>,
+        runloop: Arc<RunLoopState>,
+        api_ws_channel: Arc<crate::websocket::ApiWsChannel>,
+    ) -> Self {
+        let workflow_executor = Arc::new(
+            crate::workflow::WorkflowExecutor::new(
+                Arc::new(crate::workflow::MockAgentExecutor::new()),
+            ),
+        );
+        let workflow_store: Arc<dyn crate::workflow::WorkflowStore> =
+            Arc::new(crate::workflow::MemoryWorkflowStore::new());
+        let job_store: Arc<dyn crate::job::JobStore> =
+            Arc::new(crate::job::MemoryJobStore::new());
+
+        Self {
+            base,
+            runloop,
+            api_ws_channel,
+            webhook_registry: Arc::new(crate::webhook::WebhookRegistry::new()),
+            workflow_executor,
+            workflow_store,
+            job_store,
+        }
+    }
+
+    /// Create state with explicit workflow and job components.
+    pub fn with_components(
+        base: Arc<AppState>,
+        runloop: Arc<RunLoopState>,
+        api_ws_channel: Arc<crate::websocket::ApiWsChannel>,
+        webhook_registry: Arc<crate::webhook::WebhookRegistry>,
+        workflow_executor: Arc<crate::workflow::WorkflowExecutor>,
+        workflow_store: Arc<dyn crate::workflow::WorkflowStore>,
+        job_store: Arc<dyn crate::job::JobStore>,
+    ) -> Self {
+        Self {
+            base,
+            runloop,
+            api_ws_channel,
+            webhook_registry,
+            workflow_executor,
+            workflow_store,
+            job_store,
+        }
     }
 
     /// Get the RunLoop state.
     pub fn runloop_state(&self) -> &Arc<RunLoopState> {
         &self.runloop
+    }
+
+    /// Get the webhook registry.
+    pub fn webhook_registry(&self) -> &Arc<crate::webhook::WebhookRegistry> {
+        &self.webhook_registry
     }
 }
 

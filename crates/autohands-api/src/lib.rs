@@ -61,14 +61,16 @@ pub use runloop_bridge::{
 };
 pub use server::{InterfaceConfig, InterfaceServer};
 pub use state::AppState;
-pub use webhook::{WebhookEvent, WebhookRegistration, WebhookResponse};
-pub use websocket::{WsConnectionManager, WsMessage};
+pub use webhook::{WebhookEvent, WebhookRegistration, WebhookRegistry, WebhookResponse};
+pub use websocket::{ApiWsChannel, WsConnectionManager, WsMessage};
 
 // Workflow module exports
 pub use workflow::{
-    ExecutionContext, ExecutionState, StepResult, StepType, Workflow, WorkflowExecution,
-    WorkflowExecutor, WorkflowStep,
+    ExecutionContext, ExecutionState, MemoryWorkflowStore, StepResult, StepType, Workflow,
+    WorkflowExecution, WorkflowExecutor, WorkflowStep, WorkflowStore,
 };
 
 // Job module exports
-pub use job::{FileJobStore, Job, JobDefinition, JobStatus, JobStore, MemoryJobStore};
+pub use job::{
+    FileJobStore, Job, JobDefinition, JobScheduler, JobStatus, JobStore, MemoryJobStore,
+};

@@ -38,6 +38,11 @@ autohands-tools-cron = { path = "crates/extensions/tools-cron" }
 autohands-tools-notify = { path = "crates/extensions/tools-notify" }
 autohands-tools-image = { path = "crates/extensions/tools-image" }
 autohands-tools-memory = { path = "crates/extensions/tools-memory" }
+autohands-tools-agent = { path = "crates/extensions/tools-agent" }
+autohands-memory-markdown = { path = "crates/extensions/memory-markdown" }
+autohands-memory-vector = { path = "crates/extensions/memory-vector" }
+autohands-memory-hybrid = { path = "crates/extensions/memory-hybrid" }
+autohands-skills-bundled = { path = "crates/extensions/skills-bundled" }
 serde_json = { workspace = true }
 autohands-provider-ark = { path = "crates/extensions/provider-ark" }
 autohands-channel-web = { path = "crates/extensions/channel-web" }
@@ -82,8 +87,6 @@ members = [
     "crates/extensions/agent-general",
     "crates/extensions/skills-bundled",
     "crates/extensions/skills-dynamic",
-    "crates/extensions/mcp-bridge",
-    "crates/extensions/channel-webhook",
     "crates/extensions/tools-browser",
     "crates/extensions/tools-desktop",
     "crates/extensions/tools-cron",
@@ -115,7 +118,7 @@ async-trait = "0.1"
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-serde_yaml = "0.9"
+serde_yml = "0.0.12"
 toml = "0.8"
 
 # Error handling

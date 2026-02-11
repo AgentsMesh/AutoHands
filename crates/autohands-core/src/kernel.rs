@@ -127,6 +127,12 @@ impl Kernel {
     /// Unload an extension.
     pub async fn unload_extension(&self, id: &str) -> Result<(), ExtensionError> {
         info!("Unloading extension: {}", id);
+
+        // Shutdown the extension before removing it from the registry
+        if let Some(extension) = self.extension_registry.get(id) {
+            extension.shutdown().await?;
+        }
+
         self.extension_registry.unregister(id)?;
         Ok(())
     }

@@ -1,5 +1,4 @@
 //! Monitoring and health check handlers.
-#![allow(dead_code)]
 
 use axum::{extract::State, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
@@ -76,16 +75,12 @@ impl IntoResponse for PrometheusMetrics {
 /// Start time for uptime calculation.
 static START_TIME: std::sync::OnceLock<SystemTime> = std::sync::OnceLock::new();
 
-/// Initialize start time (call on server start).
-pub fn init_start_time() {
-    START_TIME.get_or_init(SystemTime::now);
-}
-
 /// Get uptime in seconds.
+/// Lazily initializes start time on first call.
 fn get_uptime() -> u64 {
     START_TIME
-        .get()
-        .and_then(|start| start.elapsed().ok())
+        .get_or_init(SystemTime::now)
+        .elapsed()
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }

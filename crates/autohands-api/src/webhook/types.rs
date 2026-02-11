@@ -116,6 +116,9 @@ pub struct WebhookRegistration {
     pub agent: Option<String>,
     /// Whether the webhook is enabled.
     pub enabled: bool,
+    /// Secret for signature verification (e.g., GitHub webhook secret).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
 }
 
 impl WebhookRegistration {
@@ -126,6 +129,7 @@ impl WebhookRegistration {
             description: None,
             agent: None,
             enabled: true,
+            secret: None,
         }
     }
 
@@ -144,6 +148,12 @@ impl WebhookRegistration {
     /// Set enabled state.
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
+        self
+    }
+
+    /// Set secret for signature verification.
+    pub fn with_secret(mut self, secret: impl Into<String>) -> Self {
+        self.secret = Some(secret.into());
         self
     }
 }

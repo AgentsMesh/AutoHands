@@ -1,22 +1,22 @@
-//! Scheduler integration with RunLoop.
+//! Scheduler integration via TaskSubmitter.
 //!
-//! Provides a Source0 adapter for the existing Scheduler component.
+//! Provides `SchedulerInjector` which polls a scheduler for due jobs
+//! and injects them as tasks via `TaskSubmitter`. Decoupled from
+//! RunLoop internals.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::json;
-use tracing::debug;
+use tracing::{debug, info, warn};
 
-use crate::error::RunLoopResult;
-use crate::task::{Task, TaskPriority, TaskSource};
-use crate::mode::RunLoopMode;
-use crate::source::Source0;
+use autohands_protocols::extension::TaskSubmitter;
 
 /// Scheduler control trait.
 ///
-/// Implement this trait to integrate a scheduler with RunLoop.
+/// Implement this trait to integrate a scheduler with the task system.
 #[async_trait]
 pub trait SchedulerTick: Send + Sync {
     /// Represents a due job.
@@ -40,119 +40,84 @@ pub struct JobInfo {
     pub prompt: String,
 }
 
-/// Scheduler Source0 adapter.
+/// Scheduler injector.
 ///
-/// Wraps a scheduler as a Source0 for the RunLoop.
-/// On each tick, it checks for due jobs and produces events.
-pub struct SchedulerSource0<S>
+/// Polls a scheduler for due jobs and injects them as tasks via
+/// `TaskSubmitter`. Decoupled from RunLoop internals.
+pub struct SchedulerInjector<S>
 where
     S: SchedulerTick,
 {
-    id: String,
     scheduler: Arc<S>,
-    signaled: AtomicBool,
-    cancelled: AtomicBool,
-    modes: Vec<RunLoopMode>,
+    task_submitter: Arc<dyn TaskSubmitter>,
+    running: AtomicBool,
 }
 
-impl<S> SchedulerSource0<S>
+impl<S> SchedulerInjector<S>
 where
     S: SchedulerTick + 'static,
 {
-    /// Create a new Scheduler Source0.
-    pub fn new(id: impl Into<String>, scheduler: Arc<S>) -> Self {
+    /// Create a new scheduler injector.
+    pub fn new(scheduler: Arc<S>, task_submitter: Arc<dyn TaskSubmitter>) -> Self {
         Self {
-            id: id.into(),
             scheduler,
-            signaled: AtomicBool::new(false),
-            cancelled: AtomicBool::new(false),
-            modes: vec![RunLoopMode::Default],
+            task_submitter,
+            running: AtomicBool::new(false),
         }
     }
 
-    /// Set the modes this source is associated with.
-    pub fn with_modes(mut self, modes: Vec<RunLoopMode>) -> Self {
-        self.modes = modes;
-        self
-    }
-
-    /// Signal the source to indicate it should be checked.
+    /// Start the scheduler polling loop in a background task.
     ///
-    /// Call this periodically (e.g., every second) or when you know
-    /// there might be due jobs.
-    pub fn signal_tick(&self) {
-        self.signal();
-    }
-}
+    /// Polls the scheduler every `interval` and injects due jobs as tasks.
+    pub fn start(self: &Arc<Self>, interval: Duration) {
+        self.running.store(true, Ordering::SeqCst);
+        let this = self.clone();
 
-#[async_trait]
-impl<S> Source0 for SchedulerSource0<S>
-where
-    S: SchedulerTick + 'static,
-{
-    fn id(&self) -> &str {
-        &self.id
-    }
+        tokio::spawn(async move {
+            info!("SchedulerInjector started (interval={}ms)", interval.as_millis());
 
-    fn is_signaled(&self) -> bool {
-        self.signaled.load(Ordering::SeqCst)
-    }
+            while this.running.load(Ordering::SeqCst) {
+                if this.scheduler.is_running() {
+                    let due_jobs = this.scheduler.tick().await;
 
-    fn signal(&self) {
-        self.signaled.store(true, Ordering::SeqCst);
-    }
+                    if !due_jobs.is_empty() {
+                        debug!("Scheduler tick: {} jobs due", due_jobs.len());
+                    }
 
-    fn clear_signal(&self) {
-        self.signaled.store(false, Ordering::SeqCst);
-    }
+                    for job in &due_jobs {
+                        let info = this.scheduler.job_info(job);
+                        if let Err(e) = this.task_submitter
+                            .submit_task(
+                                "scheduler:job:due",
+                                json!({
+                                    "job_id": info.job_id,
+                                    "agent": info.agent,
+                                    "prompt": info.prompt,
+                                }),
+                                None,
+                            )
+                            .await
+                        {
+                            warn!("Failed to inject scheduler task: {}", e);
+                        }
+                    }
+                }
 
-    async fn perform(&self) -> RunLoopResult<Vec<Task>> {
-        self.clear_signal();
+                tokio::time::sleep(interval).await;
+            }
 
-        if !self.scheduler.is_running() {
-            return Ok(Vec::new());
-        }
-
-        // Get due jobs
-        let due_jobs = self.scheduler.tick().await;
-
-        if due_jobs.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        debug!("Scheduler tick: {} jobs due", due_jobs.len());
-
-        // Convert jobs to events
-        let events: Vec<Task> = due_jobs
-            .iter()
-            .map(|job| {
-                let info = self.scheduler.job_info(job);
-                Task::new(
-                    "scheduler:job:due",
-                    json!({
-                        "job_id": info.job_id,
-                        "agent": info.agent,
-                        "prompt": info.prompt,
-                    }),
-                )
-                .with_source(TaskSource::Scheduler)
-                .with_priority(TaskPriority::Normal)
-            })
-            .collect();
-
-        Ok(events)
+            info!("SchedulerInjector stopped");
+        });
     }
 
-    fn cancel(&self) {
-        self.cancelled.store(true, Ordering::SeqCst);
+    /// Stop the scheduler polling loop.
+    pub fn stop(&self) {
+        self.running.store(false, Ordering::SeqCst);
     }
 
-    fn modes(&self) -> &[RunLoopMode] {
-        &self.modes
-    }
-
-    fn is_valid(&self) -> bool {
-        !self.cancelled.load(Ordering::SeqCst)
+    /// Check if the injector is running.
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
     }
 }
 

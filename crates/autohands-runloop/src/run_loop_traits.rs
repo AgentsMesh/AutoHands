@@ -42,12 +42,17 @@ impl autohands_protocols::extension::TaskSubmitter for RunLoop {
             task = task.with_correlation_id(cid.clone());
         }
 
-        // Inject into RunLoop
+        // Inject into RunLoop and wakeup
         self.inject_task(task).await.map_err(|e| {
             autohands_protocols::error::ExtensionError::Custom(format!(
                 "Failed to submit task: {}",
                 e
             ))
-        })
+        })?;
+
+        // Wakeup the RunLoop to process the newly submitted task
+        self.wakeup(format!("task_submitted:{}", task_type));
+
+        Ok(())
     }
 }

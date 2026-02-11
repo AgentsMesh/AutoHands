@@ -142,7 +142,7 @@ pub fn parse_skill_markdown(content: &str, base_dir: Option<&Path>) -> Result<Sk
     let (frontmatter_str, markdown_content) = extract_frontmatter(content)?;
 
     // Parse YAML frontmatter
-    let frontmatter: SkillFrontmatter = serde_yaml::from_str(&frontmatter_str)
+    let frontmatter: SkillFrontmatter = serde_yml::from_str(&frontmatter_str)
         .map_err(|e| SkillError::ParsingError(format!("Failed to parse frontmatter: {}", e)))?;
 
     // Build skill definition

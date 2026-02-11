@@ -1,5 +1,6 @@
 //! Agentic loop implementation.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tracing::{debug, info, warn};
@@ -112,30 +113,8 @@ impl AgentLoop {
         let mut messages = ctx.history.clone();
 
         // Memory context injection: search for memories related to the initial message
-        if let Some(ref memory) = self.memory_backend {
-            let query = MemoryQuery {
-                text: Some(initial_message.content.text()),
-                limit: 5,
-                min_relevance: Some(0.3),
-                ..Default::default()
-            };
-            match memory.search(query).await {
-                Ok(results) if !results.is_empty() => {
-                    let memory_ctx = memory_persistence::format_memory_context(&results);
-                    messages.push(Message::system(&memory_ctx));
-                    debug!(
-                        "Injected {} relevant memories into context",
-                        results.len()
-                    );
-                }
-                Ok(_) => {
-                    debug!("No relevant memories found for context injection");
-                }
-                Err(e) => {
-                    warn!("Memory search for context injection failed: {}", e);
-                }
-            }
-        }
+        self.inject_memory_context(&initial_message.content.text(), &mut messages)
+            .await;
 
         messages.push(initial_message.clone());
 
@@ -147,140 +126,8 @@ impl AgentLoop {
             }
         }
 
-        let mut turn = 0;
-        let mut total_usage = autohands_protocols::types::Usage::default();
-
-        loop {
-            if ctx.abort_signal.is_aborted() {
-                self.record_session_end("aborted", Some("User aborted"), turn, &start_time).await;
-                return Err(AgentError::Aborted);
-            }
-
-            if turn >= self.config.max_turns {
-                // Flush memory before returning error -- capture valuable info from the session
-                if let Some(ref memory) = self.memory_backend {
-                    memory_persistence::flush_memories_to_backend(&messages, memory, "session-end-flush").await;
-                }
-                self.record_session_end("max_turns", Some("Max turns exceeded"), turn, &start_time).await;
-                return Err(AgentError::MaxTurnsExceeded(turn));
-            }
-
-            turn += 1;
-            debug!("Agent loop turn {}", turn);
-
-            // Process through agent (with context length recovery)
-            ctx.history = messages.clone();
-            let response = match agent
-                .process(messages.last().unwrap().clone(), ctx.clone())
-                .await
-            {
-                Ok(resp) => resp,
-                Err(AgentError::ProviderError(ref provider_err))
-                    if provider_err.is_context_length_error() =>
-                {
-                    warn!(
-                        "Context length exceeded at turn {}, attempting compression",
-                        turn
-                    );
-                    messages = self.compress_messages(messages).await?;
-                    ctx.history = messages.clone();
-                    agent
-                        .process(messages.last().unwrap().clone(), ctx.clone())
-                        .await?
-                }
-                Err(e) => return Err(e),
-            };
-
-            // Record assistant message to transcript
-            if let Some(ref transcript) = self.transcript {
-                let content = serde_json::to_value(&response.message.content).unwrap_or_default();
-                if let Err(e) = transcript.record_assistant_message(content, None).await {
-                    warn!("Failed to record assistant message to transcript: {}", e);
-                }
-            }
-
-            // 累积 token 用量
-            if let Some(ref usage) = response.usage {
-                total_usage.prompt_tokens += usage.prompt_tokens;
-                total_usage.completion_tokens += usage.completion_tokens;
-                total_usage.total_tokens += usage.total_tokens;
-                debug!(
-                    "Turn {} usage: prompt={}, completion={}, total={}; cumulative total={}",
-                    turn, usage.prompt_tokens, usage.completion_tokens, usage.total_tokens,
-                    total_usage.total_tokens
-                );
-            }
-
-            messages.push(response.message.clone());
-
-            // Create checkpoint if enabled and interval reached
-            if let Some(ref checkpoint) = self.checkpoint {
-                if checkpoint.should_checkpoint(turn) {
-                    let context_data = serde_json::json!({
-                        "session_id": ctx.session_id,
-                        "data": ctx.data,
-                    });
-
-                    if let Err(e) = checkpoint
-                        .create_checkpoint(&ctx.session_id, turn, &messages, &context_data)
-                        .await
-                    {
-                        warn!("Failed to create checkpoint at turn {}: {}", turn, e);
-                    } else {
-                        debug!("Checkpoint created at turn {}", turn);
-                    }
-                }
-            }
-
-            if response.is_complete {
-                info!("Agent completed after {} turns", turn);
-                // Flush memory and store session summary on normal completion
-                if let Some(ref memory) = self.memory_backend {
-                    memory_persistence::flush_memories_to_backend(&messages, memory, "session-end-flush").await;
-                    memory_persistence::store_session_summary(&messages, &ctx.session_id, memory).await;
-                }
-                self.record_session_end("completed", None, turn, &start_time).await;
-                break;
-            }
-
-            // Handle tool calls
-            for tool_call in &response.tool_calls {
-                // Record tool use to transcript
-                if let Some(ref transcript) = self.transcript {
-                    if let Err(e) = transcript.record_tool_use(
-                        &tool_call.id,
-                        &tool_call.name,
-                        tool_call.arguments.clone(),
-                    ).await {
-                        warn!("Failed to record tool use to transcript: {}", e);
-                    }
-                }
-
-                let tool_start = std::time::Instant::now();
-                let result = self.execute_tool(tool_call, &ctx).await;
-                let duration_ms = tool_start.elapsed().as_millis() as u64;
-
-                // Record tool result to transcript
-                if let Some(ref transcript) = self.transcript {
-                    let is_error = result.starts_with("Error:");
-                    if let Err(e) = transcript.record_tool_result(
-                        &tool_call.id,
-                        &tool_call.name,
-                        !is_error,
-                        Some(&result),
-                        if is_error { Some(&result) } else { None },
-                        Some(duration_ms),
-                    ).await {
-                        warn!("Failed to record tool result to transcript: {}", e);
-                    }
-                }
-
-                let tool_message = Message::tool(&tool_call.id, result);
-                messages.push(tool_message);
-            }
-        }
-
-        Ok(messages)
+        self.run_loop_inner(agent, &mut ctx, messages, 0, &start_time)
+            .await
     }
 
     /// Record session end to transcript.
@@ -346,64 +193,127 @@ impl AgentLoop {
         start_turn: u32,
     ) -> Result<Vec<Message>, AgentError> {
         let start_time = std::time::Instant::now();
-        let mut turn = start_turn;
-        let mut total_usage = autohands_protocols::types::Usage::default();
 
         // Memory context injection: use the most recent User message as search query
         // (checkpoint recovery has no new initial_message)
-        if let Some(ref memory) = self.memory_backend {
-            let latest_user_text = messages
-                .iter()
-                .rev()
-                .find(|m| matches!(m.role, autohands_protocols::types::MessageRole::User))
-                .map(|m| m.content.text());
+        let latest_user_text = messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, autohands_protocols::types::MessageRole::User))
+            .map(|m| m.content.text());
 
-            if let Some(text) = latest_user_text {
-                if !text.is_empty() {
-                    let query = MemoryQuery {
-                        text: Some(text),
-                        limit: 5,
-                        min_relevance: Some(0.3),
-                        ..Default::default()
-                    };
-                    match memory.search(query).await {
-                        Ok(results) if !results.is_empty() => {
-                            let memory_ctx = memory_persistence::format_memory_context(&results);
-                            // Insert at the beginning so provider sees it before restored messages
-                            messages.insert(0, Message::system(&memory_ctx));
-                            debug!(
-                                "Injected {} relevant memories into resumed context",
-                                results.len()
-                            );
-                        }
-                        Ok(_) => {
-                            debug!("No relevant memories found for resumed context injection");
-                        }
-                        Err(e) => {
-                            warn!("Memory search for resumed context injection failed: {}", e);
-                        }
-                    }
-                }
+        if let Some(ref text) = latest_user_text {
+            if !text.is_empty() {
+                // Insert at position 0 so provider sees it before restored messages
+                self.inject_memory_context_at(text, &mut messages, 0).await;
             }
         }
 
+        self.run_loop_inner(agent, &mut ctx, messages, start_turn, &start_time)
+            .await
+    }
+
+    /// Inject memory context by appending a system message (used by `run()`).
+    async fn inject_memory_context(&self, query_text: &str, messages: &mut Vec<Message>) {
+        if let Some(ref memory) = self.memory_backend {
+            let query = MemoryQuery {
+                text: Some(query_text.to_string()),
+                limit: 5,
+                min_relevance: Some(0.3),
+                ..Default::default()
+            };
+            match memory.search(query).await {
+                Ok(results) if !results.is_empty() => {
+                    let memory_ctx = memory_persistence::format_memory_context(&results);
+                    messages.push(Message::system(&memory_ctx));
+                    debug!(
+                        "Injected {} relevant memories into context",
+                        results.len()
+                    );
+                }
+                Ok(_) => {
+                    debug!("No relevant memories found for context injection");
+                }
+                Err(e) => {
+                    warn!("Memory search for context injection failed: {}", e);
+                }
+            }
+        }
+    }
+
+    /// Inject memory context at a specific position (used by `run_from_turn()`).
+    async fn inject_memory_context_at(
+        &self,
+        query_text: &str,
+        messages: &mut Vec<Message>,
+        position: usize,
+    ) {
+        if let Some(ref memory) = self.memory_backend {
+            let query = MemoryQuery {
+                text: Some(query_text.to_string()),
+                limit: 5,
+                min_relevance: Some(0.3),
+                ..Default::default()
+            };
+            match memory.search(query).await {
+                Ok(results) if !results.is_empty() => {
+                    let memory_ctx = memory_persistence::format_memory_context(&results);
+                    messages.insert(position, Message::system(&memory_ctx));
+                    debug!(
+                        "Injected {} relevant memories into resumed context",
+                        results.len()
+                    );
+                }
+                Ok(_) => {
+                    debug!("No relevant memories found for resumed context injection");
+                }
+                Err(e) => {
+                    warn!("Memory search for resumed context injection failed: {}", e);
+                }
+            }
+        }
+    }
+
+    /// Shared loop body for `run()` and `run_from_turn()`.
+    ///
+    /// Handles: turn iteration, abort/max-turns checks, agent processing with
+    /// context-length recovery, transcript recording, token accumulation,
+    /// checkpointing, completion/memory flush, and tool execution.
+    async fn run_loop_inner(
+        &self,
+        agent: &dyn Agent,
+        ctx: &mut AgentContext,
+        mut messages: Vec<Message>,
+        start_turn: u32,
+        start_time: &std::time::Instant,
+    ) -> Result<Vec<Message>, AgentError> {
+        let mut turn = start_turn;
+        let mut total_usage = autohands_protocols::types::Usage::default();
+
         loop {
             if ctx.abort_signal.is_aborted() {
-                self.record_session_end("aborted", Some("User aborted"), turn, &start_time).await;
+                self.record_session_end("aborted", Some("User aborted"), turn, start_time)
+                    .await;
                 return Err(AgentError::Aborted);
             }
 
             if turn >= self.config.max_turns {
-                // Flush memory before returning error
+                // Flush memory before returning error -- capture valuable info from the session
                 if let Some(ref memory) = self.memory_backend {
-                    memory_persistence::flush_memories_to_backend(&messages, memory, "session-end-flush").await;
+                    memory_persistence::flush_memories_to_backend(
+                        &messages,
+                        memory,
+                        "session-end-flush",
+                    )
+                    .await;
                 }
-                self.record_session_end("max_turns", Some("Max turns exceeded"), turn, &start_time).await;
+                self.record_session_end("max_turns", Some("Max turns exceeded"), turn, start_time)
+                    .await;
                 return Err(AgentError::MaxTurnsExceeded(turn));
             }
 
             turn += 1;
-            debug!("Agent loop turn {} (resumed)", turn);
+            debug!("Agent loop turn {}", turn);
 
             // Process through agent (with context length recovery)
             ctx.history = messages.clone();
@@ -416,7 +326,7 @@ impl AgentLoop {
                     if provider_err.is_context_length_error() =>
                 {
                     warn!(
-                        "Context length exceeded at turn {} (resumed), attempting compression",
+                        "Context length exceeded at turn {}, attempting compression",
                         turn
                     );
                     messages = self.compress_messages(messages).await?;
@@ -430,7 +340,8 @@ impl AgentLoop {
 
             // Record assistant message to transcript
             if let Some(ref transcript) = self.transcript {
-                let content = serde_json::to_value(&response.message.content).unwrap_or_default();
+                let content =
+                    serde_json::to_value(&response.message.content).unwrap_or_default();
                 if let Err(e) = transcript.record_assistant_message(content, None).await {
                     warn!("Failed to record assistant message to transcript: {}", e);
                 }
@@ -442,8 +353,11 @@ impl AgentLoop {
                 total_usage.completion_tokens += usage.completion_tokens;
                 total_usage.total_tokens += usage.total_tokens;
                 debug!(
-                    "Turn {} (resumed) usage: prompt={}, completion={}, total={}; cumulative total={}",
-                    turn, usage.prompt_tokens, usage.completion_tokens, usage.total_tokens,
+                    "Turn {} usage: prompt={}, completion={}, total={}; cumulative total={}",
+                    turn,
+                    usage.prompt_tokens,
+                    usage.completion_tokens,
+                    usage.total_tokens,
                     total_usage.total_tokens
                 );
             }
@@ -470,13 +384,24 @@ impl AgentLoop {
             }
 
             if response.is_complete {
-                info!("Agent completed after {} turns (resumed from {})", turn, start_turn);
+                info!("Agent completed after {} turns", turn);
                 // Flush memory and store session summary on normal completion
                 if let Some(ref memory) = self.memory_backend {
-                    memory_persistence::flush_memories_to_backend(&messages, memory, "session-end-flush").await;
-                    memory_persistence::store_session_summary(&messages, &ctx.session_id, memory).await;
+                    memory_persistence::flush_memories_to_backend(
+                        &messages,
+                        memory,
+                        "session-end-flush",
+                    )
+                    .await;
+                    memory_persistence::store_session_summary(
+                        &messages,
+                        &ctx.session_id,
+                        memory,
+                    )
+                    .await;
                 }
-                self.record_session_end("completed", None, turn, &start_time).await;
+                self.record_session_end("completed", None, turn, start_time)
+                    .await;
                 break;
             }
 
@@ -484,30 +409,36 @@ impl AgentLoop {
             for tool_call in &response.tool_calls {
                 // Record tool use to transcript
                 if let Some(ref transcript) = self.transcript {
-                    if let Err(e) = transcript.record_tool_use(
-                        &tool_call.id,
-                        &tool_call.name,
-                        tool_call.arguments.clone(),
-                    ).await {
+                    if let Err(e) = transcript
+                        .record_tool_use(
+                            &tool_call.id,
+                            &tool_call.name,
+                            tool_call.arguments.clone(),
+                        )
+                        .await
+                    {
                         warn!("Failed to record tool use to transcript: {}", e);
                     }
                 }
 
                 let tool_start = std::time::Instant::now();
-                let result = self.execute_tool(tool_call, &ctx).await;
+                let result = self.execute_tool(tool_call, ctx).await;
                 let duration_ms = tool_start.elapsed().as_millis() as u64;
 
                 // Record tool result to transcript
                 if let Some(ref transcript) = self.transcript {
                     let is_error = result.starts_with("Error:");
-                    if let Err(e) = transcript.record_tool_result(
-                        &tool_call.id,
-                        &tool_call.name,
-                        !is_error,
-                        Some(&result),
-                        if is_error { Some(&result) } else { None },
-                        Some(duration_ms),
-                    ).await {
+                    if let Err(e) = transcript
+                        .record_tool_result(
+                            &tool_call.id,
+                            &tool_call.name,
+                            !is_error,
+                            Some(&result),
+                            if is_error { Some(&result) } else { None },
+                            Some(duration_ms),
+                        )
+                        .await
+                    {
                         warn!("Failed to record tool result to transcript: {}", e);
                     }
                 }
@@ -530,7 +461,11 @@ impl AgentLoop {
             None => return format!("Tool not found: {}", tool_call.name),
         };
 
-        let tool_ctx = ToolContext::new(&ctx.session_id, std::env::current_dir().unwrap());
+        let work_dir = ctx
+            .work_dir
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let tool_ctx = ToolContext::new(&ctx.session_id, work_dir);
 
         let result = match tool.execute(tool_call.arguments.clone(), tool_ctx).await {
             Ok(result) => result.content,

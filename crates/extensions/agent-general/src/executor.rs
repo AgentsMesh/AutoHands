@@ -1,8 +1,8 @@
 //! Single-turn agent executor.
 //!
 //! This module provides a single-turn executor that handles one LLM call
-//! and optional tool execution. The agentic loop control is handled by
-//! `AgentLoop` in autohands-runtime.
+//! and returns tool_calls for the caller to execute. Tool execution and
+//! agentic loop control are handled by `AgentLoop` in autohands-runtime.
 
 #[cfg(test)]
 #[path = "executor_tests.rs"]
@@ -17,16 +17,18 @@ use autohands_protocols::types::{Message, StopReason, ToolCall};
 use autohands_runtime::TranscriptWriter;
 
 /// Result of a single-turn execution.
+///
+/// Contains the LLM response and any tool_calls requested by the model.
+/// Tool execution is NOT performed here — it is the caller's responsibility
+/// (typically `AgentLoop`) to execute the tools and feed results back.
 #[derive(Debug)]
 pub struct SingleTurnResult {
     /// The assistant's response message.
     pub message: Message,
 
-    /// Tool calls made in this turn (if any).
+    /// Tool calls requested by the LLM in this turn (if any).
+    /// The caller is responsible for executing these tools.
     pub tool_calls: Vec<ToolCall>,
-
-    /// Tool results (if tools were called).
-    pub _tool_results: Vec<Message>,
 
     /// Whether the agent considers the task complete.
     pub is_complete: bool,
@@ -40,18 +42,18 @@ pub struct SingleTurnResult {
 
 /// Single-turn executor for agent interactions.
 ///
-/// This executor handles a single LLM call and optional tool execution.
-/// It does NOT implement the agentic loop - that's the responsibility
-/// of `AgentLoop` in autohands-runtime.
+/// This executor handles a single LLM call and returns the result
+/// (including any tool_calls) for the caller to handle. It does NOT
+/// execute tools or implement the agentic loop — those are the
+/// responsibility of `AgentLoop` in autohands-runtime.
 ///
-/// # Design Rationale (DRY Principle)
+/// # Design Rationale (SRP + DRY)
 ///
-/// Previously, both `AgentExecutor` and `AgentLoop` implemented similar
-/// loop logic (abort checking, max_turns, tool execution). This violated
-/// DRY and caused maintenance issues. Now:
+/// - `SingleTurnExecutor`: Single LLM call only (request building + provider call)
+/// - `AgentLoop`: Loop control, tool execution, abort handling, checkpointing
 ///
-/// - `SingleTurnExecutor`: Single LLM call + tool execution
-/// - `AgentLoop`: Loop control, abort handling, checkpointing
+/// Tool execution is intentionally excluded from this layer to prevent
+/// double-execution bugs and maintain a single point of control.
 pub struct SingleTurnExecutor {
     pub(crate) config: AgentConfig,
     pub(crate) provider: Arc<dyn LLMProvider>,

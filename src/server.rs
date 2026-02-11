@@ -8,6 +8,7 @@ use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use autohands_api::{AppState, InterfaceConfig};
+use autohands_protocols::Channel;
 use autohands_channel_web::{WebChannel, WebChannelConfig};
 use autohands_checkpoint::{CheckpointConfig as CpConfig, CheckpointManager, FileCheckpointStore};
 use autohands_config::{Config, ConfigLoader};
@@ -96,8 +97,8 @@ pub(crate) async fn run_server(
     // Register providers based on config and available API keys
     register_providers(&provider_registry, &config).await;
 
-    // Register tools and get skill registry + memory backend
-    let (skill_registry, memory_backend) = register_tools_with_skill_registry(
+    // Register tools and get skill registry + memory backend + agent tools extension
+    let (skill_registry, memory_backend, agent_tools_ext) = register_tools_with_skill_registry(
         tool_registry.clone(),
         provider_registry.clone(),
         &work_dir,
@@ -175,6 +176,12 @@ pub(crate) async fn run_server(
     }
 
     let agent_runtime = Arc::new(agent_runtime);
+
+    // Inject AgentRuntime into tools-agent extension (post-initialization)
+    if let Some(ref ext) = agent_tools_ext {
+        ext.set_runtime(agent_runtime.clone());
+        info!("AgentRuntime injected into tools-agent extension");
+    }
 
     // Register agents with skill metadata injected into system prompt
     register_agents(
@@ -277,7 +284,15 @@ pub(crate) async fn run_server(
 
     // Build the server with monitor routes merged in
     let interface_config = InterfaceConfig::new(&host, port);
-    let hybrid_state = Arc::new(autohands_api::HybridAppState::new(state, runloop_state));
+    // Create API WebSocket Channel for response routing
+    let api_ws_channel = Arc::new(autohands_api::ApiWsChannel::new());
+    channel_registry
+        .register(api_ws_channel.clone())
+        .expect("Failed to register api-ws channel");
+    api_ws_channel.start().await.expect("Failed to start api-ws channel");
+    info!("API WebSocket Channel registered for response routing");
+
+    let hybrid_state = Arc::new(autohands_api::HybridAppState::new(state, runloop_state, api_ws_channel));
     let base_router = autohands_api::create_router_with_hybrid_state(hybrid_state);
 
     // Add monitor routes (/health, /metrics) if enabled

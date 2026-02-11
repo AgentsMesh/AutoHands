@@ -1,4 +1,5 @@
 use super::*;
+use std::path::PathBuf;
 use tempfile::TempDir;
 
 fn create_test_context(work_dir: PathBuf) -> ToolContext {
@@ -113,7 +114,7 @@ async fn test_edit_file_not_found() {
     let tool = EditFileTool::new();
     let ctx = create_test_context(temp_dir.path().to_path_buf());
     let params = serde_json::json!({
-        "path": "/nonexistent/file.txt",
+        "path": "nonexistent_file.txt",
         "old_string": "foo",
         "new_string": "bar"
     });
@@ -172,18 +173,20 @@ fn test_edit_file_params_with_replace_all() {
     assert!(params.replace_all);
 }
 
-#[test]
-fn test_resolve_path_absolute() {
-    let work_dir = PathBuf::from("/home/user");
-    let resolved = resolve_path("/absolute/path", &work_dir);
-    assert_eq!(resolved, PathBuf::from("/absolute/path"));
-}
-
-#[test]
-fn test_resolve_path_relative() {
-    let work_dir = PathBuf::from("/home/user");
-    let resolved = resolve_path("relative/path", &work_dir);
-    assert_eq!(resolved, PathBuf::from("/home/user/relative/path"));
+#[tokio::test]
+async fn test_edit_file_path_traversal_denied() {
+    let temp_dir = TempDir::new().unwrap();
+    let tool = EditFileTool::new();
+    let ctx = create_test_context(temp_dir.path().to_path_buf());
+    let params = serde_json::json!({
+        "path": "../../../etc/passwd",
+        "old_string": "root",
+        "new_string": "hacked"
+    });
+    let result = tool.execute(params, ctx).await;
+    assert!(result.is_err());
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(err_msg.contains("Path traversal denied"));
 }
 
 #[tokio::test]

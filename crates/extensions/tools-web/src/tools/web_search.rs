@@ -109,6 +109,8 @@ impl Tool for WebSearchTool {
         params: serde_json::Value,
         _ctx: ToolContext,
     ) -> Result<ToolResult, ToolError> {
+        tracing::warn!("web_search is using stub implementation, results are mock data");
+
         let params: SearchParams = serde_json::from_value(params)
             .map_err(|e| ToolError::InvalidParameters(e.to_string()))?;
 

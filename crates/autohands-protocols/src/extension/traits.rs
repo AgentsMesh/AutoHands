@@ -22,7 +22,7 @@ pub trait Extension: Send + Sync + 'static {
     async fn initialize(&mut self, ctx: ExtensionContext) -> Result<(), ExtensionError>;
 
     /// Shutdown the extension.
-    async fn shutdown(&mut self) -> Result<(), ExtensionError> {
+    async fn shutdown(&self) -> Result<(), ExtensionError> {
         Ok(())
     }
 

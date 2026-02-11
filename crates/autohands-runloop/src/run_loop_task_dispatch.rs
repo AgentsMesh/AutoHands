@@ -1,5 +1,6 @@
 //! RunLoop task dispatch and processing logic.
 
+use chrono::{Duration as ChronoDuration, Utc};
 use tracing::{debug, error, info, warn};
 
 use autohands_protocols::channel::OutboundMessage;
@@ -7,7 +8,7 @@ use autohands_protocols::channel::OutboundMessage;
 use crate::agent_source::AgentTaskInjector;
 use crate::error::RunLoopResult;
 use crate::run_loop::RunLoop;
-use crate::task::Task;
+use crate::task::{Task, TaskSource};
 
 impl RunLoop {
     /// Process a task using the configured handler.
@@ -54,9 +55,32 @@ impl RunLoop {
                 );
                 handler.handle_delayed(&task, &injector).await
             }
-            _ => {
-                debug!("Unknown task type: {}, ignoring", task.task_type);
+            t if t.starts_with("trigger:") => {
+                info!(
+                    "Executing trigger task as agent execution: task_id={}, type={}",
+                    task.id, task.task_type
+                );
+                handler.handle_execute(&task, &injector).await
+            }
+            t if t.starts_with("timer:") || t.starts_with("system:") => {
+                debug!(
+                    "Processing timer/system task: task_id={}, type={}",
+                    task.id, task.task_type
+                );
+                // If the task is a repeating timer, reschedule before returning
+                if task.metadata.get("timer_repeat")
+                    == Some(&serde_json::Value::Bool(true))
+                {
+                    self.reschedule_repeating_timer(&task).await?;
+                }
                 return Ok(());
+            }
+            _ => {
+                warn!(
+                    "Unknown task type: {}, attempting handle_execute as fallback",
+                    task.task_type
+                );
+                handler.handle_execute(&task, &injector).await
             }
         };
 
@@ -119,6 +143,38 @@ impl RunLoop {
             );
         }
 
+        Ok(())
+    }
+
+    /// Reschedule a repeating timer task.
+    ///
+    /// Reads `timer_interval_ms` from the task's metadata, creates a new Task
+    /// with the same type/payload/metadata and a `scheduled_at` offset, then enqueues it.
+    async fn reschedule_repeating_timer(&self, task: &Task) -> RunLoopResult<()> {
+        let interval_ms = task
+            .metadata
+            .get("timer_interval_ms")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(60_000); // Default to 60s if not specified
+
+        let next_scheduled = Utc::now() + ChronoDuration::milliseconds(interval_ms as i64);
+
+        let new_task = Task::new(task.task_type.clone(), task.payload.clone())
+            .with_source(TaskSource::Timer)
+            .with_scheduled_at(next_scheduled);
+
+        // Copy over timer metadata to the new task
+        let mut new_task = new_task;
+        for (key, value) in &task.metadata {
+            new_task.metadata.insert(key.clone(), value.clone());
+        }
+
+        info!(
+            "Rescheduling repeating timer: type={}, interval={}ms, next_at={}",
+            task.task_type, interval_ms, next_scheduled
+        );
+
+        self.task_queue.enqueue(new_task).await?;
         Ok(())
     }
 }

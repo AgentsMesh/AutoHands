@@ -44,7 +44,7 @@
 //! - [`RunLoopObserver`]: Phase observers
 //! - [`Task`]: Tasks flowing through the loop
 //! - [`Timer`]: High-level timer abstraction
-//! - [`AgentDriver`]: Agent execution integration
+//! - [`AgentEventHandler`]: Agent task handler trait
 //!
 //! ## Example
 //!
@@ -92,7 +92,7 @@ pub mod spawner_types;
 pub mod timer;
 
 // Re-exports
-pub use agent_driver::{AgentDriver, AgentEventHandler, AgentExecutionContext, AgentResult, ExecutionStatus};
+pub use agent_driver::{AgentEventHandler, AgentExecutionContext, AgentResult, ExecutionStatus};
 pub use agent_source::{AgentTaskInjector, AgentSource0};
 pub use config::{TaskChainConfig, TaskQueueConfig, RetryConfig, RunLoopConfig, WorkerPoolConfig};
 pub use error::{TaskChainError, RunLoopError, RunLoopResult};
@@ -126,10 +126,10 @@ pub use integration::health::{
     HealthCheckError, HealthCheckObserver, HealthCheckable, HealthStatus,
     LivenessCheck, MemoryCheck, TaskQueueCheck,
 };
-pub use integration::scheduler::{JobInfo, SchedulerSource0, SchedulerTick};
+pub use integration::scheduler::{JobInfo, SchedulerInjector, SchedulerTick};
 pub use integration::signal::{SignalEvent, SignalSender, SignalSource1};
 pub use integration::runtime::{RuntimeAgentEventHandler, RuntimeAgentEventHandlerBuilder};
-pub use integration::websocket::{HttpTaskInjector, WebSocketSender, WebSocketSource1, WsMessageType};
+pub use integration::websocket::{HttpTaskInjector, WsMessageType};
 
 // Trigger types (shared by file_watcher and webhook)
 pub use integration::trigger_types::{
@@ -138,9 +138,9 @@ pub use integration::trigger_types::{
 // File watcher exports
 pub use integration::file_watcher::FileWatcherTrigger;
 pub use integration::file_watcher_manager::FileWatcherManager;
-pub use integration::file_watcher_source::{FileChangeEvent, FileChangeType, FileWatcherSource1};
+pub use integration::file_watcher_source::{FileChangeEvent, FileChangeType, FileWatcherInjector};
 // Webhook exports
-pub use integration::webhook::{WebhookEvent, WebhookSource1, WebhookTrigger};
+pub use integration::webhook::{WebhookEvent, WebhookInjector, WebhookTrigger};
 
 // Channel bridge exports
 pub use integration::channel_bridge::{ChannelBridge, ChannelBridgeConfig};

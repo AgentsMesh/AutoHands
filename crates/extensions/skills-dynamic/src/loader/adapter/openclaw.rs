@@ -127,7 +127,7 @@ impl SkillAdapter for OpenClawAdapter {
             SkillError::ParsingError("Missing YAML frontmatter".to_string())
         })?;
 
-        let fm: OpenClawFrontmatter = serde_yaml::from_str(&frontmatter_str)
+        let fm: OpenClawFrontmatter = serde_yml::from_str(&frontmatter_str)
             .map_err(|e| SkillError::ParsingError(format!("Invalid frontmatter: {}", e)))?;
 
         // Use name as ID

@@ -91,7 +91,7 @@ impl SkillAdapter for MicrosoftAdapter {
             SkillError::ParsingError("Missing YAML frontmatter".to_string())
         })?;
 
-        let fm: MicrosoftFrontmatter = serde_yaml::from_str(&frontmatter_str)
+        let fm: MicrosoftFrontmatter = serde_yml::from_str(&frontmatter_str)
             .map_err(|e| SkillError::ParsingError(format!("Invalid frontmatter: {}", e)))?;
 
         // Microsoft uses name directly as ID (already kebab-case)
